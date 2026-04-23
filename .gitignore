@@ -45,6 +45,7 @@
 .autopilot/
 .apc/
 hls.app
+hls_prj/
 
 # editor's preference settings
 .settings/
