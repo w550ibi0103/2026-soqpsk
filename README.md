@@ -1,6 +1,8 @@
-## 開發環境建立, 執行腳本
+## 還原開發環境
+# 執行腳本
 1. 打開 Vitis HLS Command Prompt, 使用 cd 指令進入你 clone 下來的根目錄: 2026-soqpsk
 2. 從根目錄呼叫 scripts 資料夾裡的腳本: vitis_hls -f scripts/run_hls.tcl
+3. 打開 Vitis HLS, 從 hls_prj 資料夾開啟 project
 
 ## 問題與解法
 # 編譯器在跑模擬 (CSIM) 時，找不到你的標頭檔 top.h
