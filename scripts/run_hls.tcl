@@ -31,7 +31,7 @@ if {[file exists "./hls_prj/solution1/directives.tcl"]} {
 }
 
 # Run C Simulation (Functional verification)
-#csim_design
+csim_design
 
 # Run C Synthesis (Transform C++ to RTL/Verilog)
 #csynth_design
