@@ -63,3 +63,4 @@ hls.app
 
 #  IP package
 *.zip
+/Debug/

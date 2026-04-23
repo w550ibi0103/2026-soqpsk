@@ -192,7 +192,7 @@ void tfm_modulator(
         out_freq.last = real_last;
 
         // TKEEP mask: -1 (all 1s) indicates all bytes in the payload are valid
-        out_i.keep = -1; out_q.keep = -1; out_phase.keep = -1; // <--- NEW: Keep all bytes valid
+        out_i.keep = -1; out_q.keep = -1; out_phase.keep = -1; out_freq.keep = -1;  // <--- NEW: Keep all bytes valid
 
         i_out.write(out_i);
         q_out.write(out_q);
