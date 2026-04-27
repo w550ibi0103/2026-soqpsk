@@ -26,12 +26,15 @@ typedef ap_axiu<24, 0, 0, 0> sample_pkt;
 
 // Top-level function declaration
 void tfm_modulator(
-    hls::stream<bit_pkt> &bit_in,
-    bool reset,
-    hls::stream<sample_pkt> &i_out,
-    hls::stream<sample_pkt> &q_out,
-	hls::stream<sample_pkt> &phase_out,
-	hls::stream<sample_pkt> &freq_out
+	hls::stream<bit_pkt> &bit_in,
+	bool reset,
+	hls::stream<sample_pkt> &i_out,
+	hls::stream<sample_pkt> &q_out,
+	int &debug_current_bit,
+	data_t &debug_alpha,
+	data_t &debug_pulse,
+	data_t &debug_phase,
+	data_t &debug_freq
 );
 
 #endif
