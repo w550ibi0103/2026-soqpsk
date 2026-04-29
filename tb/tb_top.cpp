@@ -12,9 +12,9 @@ int main() {
 	hls::stream<sample_pkt> q_out("q_out_stream");
 	int debug_current_bit;
 	data_t debug_alpha;
-	data_t debug_pulse;
-	data_t debug_phase;
-	data_t debug_freq;
+	hls::stream<data_t> debug_pulse;
+	hls::stream<data_t> debug_phase;
+	hls::stream<data_t> debug_freq;
 
 	// --------------------------------------------------------
 	// 2. Prepare test vectors (Simulating DMA behavior)
@@ -56,6 +56,12 @@ int main() {
 	for (int i = 0; i < total_calls; i++) {
 		// Call the IP with reset=false
 		tfm_modulator(bit_in, false, i_out, q_out, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq);
+		for (int i = 0; i < SPS; i++) {
+		    data_t db_pulse = debug_pulse.read();
+		    data_t db_phase = debug_phase.read();
+		    data_t db_freq = debug_freq.read();
+		}
+
 	}
 
 	// --------------------------------------------------------

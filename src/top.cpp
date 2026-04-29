@@ -23,11 +23,11 @@ void tfm_modulator(
 	bool reset,
 	hls::stream<sample_pkt> &i_out,
 	hls::stream<sample_pkt> &q_out,
-	int &debug_current_bit,
-	data_t &debug_alpha,
-	data_t &debug_pulse,
-	data_t &debug_phase,
-	data_t &debug_freq
+	int &debug_current_bit,  // 1 bit 1 function call
+	data_t &debug_alpha,  // 1 bit 1 function call
+	hls::stream<data_t> &debug_pulse,
+	hls::stream<data_t> &debug_phase,
+	hls::stream<data_t> &debug_freq
 ) {
 	// Hardware interface pragmas for Vitis HLS (AXI-Lite for control, AXI-Stream for data)
 	// Map data ports to AXI4-Stream
@@ -35,10 +35,11 @@ void tfm_modulator(
 	#pragma HLS INTERFACE axis port=i_out
 	#pragma HLS INTERFACE axis port=q_out
 
+	#pragma HLS INTERFACE ap_none port=debug_current_bit
 	#pragma HLS INTERFACE ap_none port=debug_alpha
-	#pragma HLS INTERFACE ap_none port=debug_pulse
-	#pragma HLS INTERFACE ap_none port=debug_phase
-	#pragma HLS INTERFACE ap_none port=debug_freq
+	#pragma HLS INTERFACE axis port=debug_pulse
+	#pragma HLS INTERFACE axis port=debug_phase
+	#pragma HLS INTERFACE axis port=debug_freq
 
 	// Map control signals (reset, start, done, idle) to AXI4-Lite
 	#pragma HLS INTERFACE s_axilite port=reset bundle=CTRL
@@ -151,7 +152,7 @@ void tfm_modulator(
 
 		// Upsampling: Insert impulse at the first sample, zero-stuff the rest
 		data_t impulse = (s == 0) ? alpha : (data_t)0;
-		debug_pulse = impulse;
+		debug_pulse.write(impulse);
 
 		// Shift register for the FIR filter convolution
 		// All elements shift right by one index, and the new impulse is placed at index 0.
@@ -174,8 +175,8 @@ void tfm_modulator(
 		if (current_phase > (data_t)3.1415926535) current_phase -= (data_t)6.283185307;
 		else if (current_phase < (data_t)-3.1415926535) current_phase += (data_t)6.283185307;
 
-		debug_phase = current_phase;
-		debug_freq  = freq_dev;
+		debug_phase.write(current_phase);
+		debug_freq.write(freq_dev);
 
 		// --- Output Formatting & TLAST Propagation ---
 		// out_i.data expects raw bits, while hls::cos returns a fixed-point object.

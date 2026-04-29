@@ -32,9 +32,9 @@ void tfm_modulator(
 	hls::stream<sample_pkt> &q_out,
 	int &debug_current_bit,
 	data_t &debug_alpha,
-	data_t &debug_pulse,
-	data_t &debug_phase,
-	data_t &debug_freq
+	hls::stream<data_t> &debug_pulse,
+	hls::stream<data_t> &debug_phase,
+	hls::stream<data_t> &debug_freq
 );
 
 #endif
