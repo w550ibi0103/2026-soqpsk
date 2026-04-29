@@ -7,13 +7,13 @@
 
 ## 腳本指令說明
 1. csim_design: 最單純的軟體測試. 工具會把你寫的 top.cpp 和 tb_top.cpp 當作一般的 C++ 程式, 用 GCC 或 Clang 編譯器跑一次.
-    1.1. 目的: 驗證演算法的「功能」對不對.
+- 目的: 驗證演算法的「功能」對不對.
 2. csynth_design: 工具會開始把你的 C++ 程式碼「翻譯」成硬體描述語言 (Verilog 或 VHDL).
-    2.1. 目的: 將軟體邏輯轉換為硬體電路設計圖, 工具會進行「排程 (Scheduling)」(決定哪個加法器在哪個 Clock 執行) 與「綁定 (Binding)」(決定這個加法要用 DSP 還是 LUT 來做).
+- 目的: 將軟體邏輯轉換為硬體電路設計圖, 工具會進行「排程 (Scheduling)」(決定哪個加法器在哪個 Clock 執行) 與「綁定 (Binding)」(決定這個加法要用 DSP 還是 LUT 來做).
 3. cosim_design: 拿步驟 1 寫好的 C++ 測試檔 (Testbench) 產生輸入測資, 餵給步驟 2 產生出來的「硬體電路 (RTL)」, 然後把硬體算出來的結果, 拿去跟 C++ 算出來的結果做比對.
-    3.1. 目的: 驗證「合成出來的硬體」行為是否和「原本的 C++ 軟體」一模一樣.
+- 目的: 驗證「合成出來的硬體」行為是否和「原本的 C++ 軟體」一模一樣.
 4. export_design: 拿著步驟 2 產生出來的硬體設計圖, 實際對應到你指定的 FPGA 晶片內部結構上. 包含了邏輯合成 (Logic Synthesis), 佈局 (Placement - 決定邏輯閘要放在晶片的哪個位置) 以及繞線 (Routing - 把這些邏輯閘用金屬線連起來).
-    4.1. 目的: 獲得最真實的硬體數據, 並準備產生最終燒錄檔.
+- 目的: 獲得最真實的硬體數據, 並準備產生最終燒錄檔.
 
 ## C Simulation 功能介紹
 1. Launch Debugger: 編譯你的 C/C++ 程式碼與 Testbench, 但不會直接把程式跑完, 而是會自動切換到 Debug Perspective（除錯介面）. 當你的 C Simulation 結果不如預期、發生當機（例如 Segmentation Fault）, 或是你想確認某個變數在迴圈裡的值是如何變化的時候。你可以利用它來下斷點（Breakpoints）、單步執行（Step Over/Into）並即時監控變數.
@@ -24,12 +24,12 @@
 
 ## C Synthesis 功能介紹
 1. Vivado IP Flow Target: 這就是最經典的 HLS 開發模式, 將 C/C++ 演算法轉換成標準的硬體矽智財（RTL IP）.
-    1.1. 整合方式: 你必須打開 Vivado, 建立 Block Design, 把這個 IP 拉進畫布中. 然後手動把時鐘（ap_clk）、重置信號（ap_rst_n）、AXI 總線一根一根連起來, 甚至手動配置 AXI DMA 來搬運資料.
-    1.2. 控制方式: 通常在 Zynq PS 端寫 Bare-metal（裸機）C code 或自製 Linux Driver, 透過讀寫 AXI4-Lite 暫存器來控制 IP 啟動.
+- 整合方式: 你必須打開 Vivado, 建立 Block Design, 把這個 IP 拉進畫布中. 然後手動把時鐘（ap_clk）、重置信號（ap_rst_n）、AXI 總線一根一根連起來, 甚至手動配置 AXI DMA 來搬運資料.
+- 控制方式: 通常在 Zynq PS 端寫 Bare-metal（裸機）C code 或自製 Linux Driver, 透過讀寫 AXI4-Lite 暫存器來控制 IP 啟動.
 
 2. Vitis Kernel Flow Target: 這是 Xilinx 較新推廣的異質運算（Heterogeneous Computing）模式, 主要搭配 XRT (Xilinx Runtime) 使用.
-    2.1. 整合方式: 你不需要打開 Vivado 畫 Block Design. 你只需把 .xo 檔交給 Vitis, 設定好要連結幾個 DDR 記憶體通道, Vitis 的 v++ 編譯器會在背景自動幫你生成 Vivado 專案, 自動把 AXI 總線和記憶體控制器接好.
-    2.2. 控制方式: 在運行 Embedded Linux 的 Zynq SoC（或資料中心的 Alveo 卡）上, 軟體端會使用 OpenCL 或 XRT API（C++/Python）來呼叫這個 Kernel, 就像呼叫軟體函式庫一樣, 作業系統會自動處理資料搬運與硬體啟動.
+- 整合方式: 你不需要打開 Vivado 畫 Block Design. 你只需把 .xo 檔交給 Vitis, 設定好要連結幾個 DDR 記憶體通道, Vitis 的 v++ 編譯器會在背景自動幫你生成 Vivado 專案, 自動把 AXI 總線和記憶體控制器接好.
+- 控制方式: 在運行 Embedded Linux 的 Zynq SoC（或資料中心的 Alveo 卡）上, 軟體端會使用 OpenCL 或 XRT API（C++/Python）來呼叫這個 Kernel, 就像呼叫軟體函式庫一樣, 作業系統會自動處理資料搬運與硬體啟動.
 
 ## C/RTL Co-simulation 功能介紹
 1. Vivado XSIM / ModelSim / Riviera: 預設選 Vivado XSIM 就好, 這是 Xilinx 內建且免費的. ModelSim 或 Riviera 是第三方的商業軟體, 模擬速度通常更快, 但你需要另外購買授權並安裝. 如果你選了第三方軟體, 才需要填寫下方的 Compiled Library Location 告訴工具函式庫在哪裡.
