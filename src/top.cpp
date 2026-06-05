@@ -1,16 +1,9 @@
 #include "top.h"
-#include <hls_stream.h>    // Required for AXI-Stream interface
-#include <ap_axi_sdata.h>  // Required for AXI-Stream sideband signals (TLAST, TKEEP)
 
 // --- Include standard I/O for debugging during C simulation ---
 #ifndef __SYNTHESIS__
 #include <iostream>
 #endif
-
-// AXI-Stream packet type definitions
-// ap_axiu<Data Width, User Width, ID Width, Destination Width>
-typedef ap_axiu<32, 0, 0, 0> bit_pkt;     // Input packet: 32-bit data from DMA
-typedef ap_axiu<24, 0, 0, 0> sample_pkt;  // Output packet: 24-bit I/Q samples to RF
 
 // Pre-calculated pulse shaping filter coefficients g(t) (generated via Python)
 static const data_t g_coeff[G_LEN] = {
@@ -95,7 +88,7 @@ void tfm_modulator(
 	if (idle_mode) {
 		current_bit = 0; // Dummy data to maintain continuous RF carrier phase
 	} else {
-		current_bit = (current_word >> bit_index) & 0x1;
+		current_bit = (current_word >> bit_index) & 0x1;  // Right shift and mask
 	}
 	debug_current_bit = current_bit;
 

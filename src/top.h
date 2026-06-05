@@ -19,9 +19,11 @@ typedef ap_fixed<24, 8> data_t;
 
 // --- AXI-Stream packet type definitions ---
 // bit_pkt: 32-bit AXI-Stream packet used to receive a 1-bit payload
+// ap_axiu<Data Width, User Width, ID Width, Destination Width>
 typedef ap_axiu<32, 0, 0, 0> bit_pkt;
 
 // sample_pkt: 24-bit AXI-Stream packet used to output I/Q samples
+// ap_axiu<Data Width, User Width, ID Width, Destination Width>
 typedef ap_axiu<24, 0, 0, 0> sample_pkt;
 
 // Top-level function declaration
