@@ -41,7 +41,7 @@ void tfm_modulator(
 	// Internal state registers (Static variables map to Flip-Flops or BRAM)
 	static bool idle_mode = true;
 	static int last_delta = 0;
-	static int bit_cnt = 0;
+	static bool odd_flag = false;
 
 	// Static array of size 3 to retain past states. The 3rd element is reserved for padding/redundancy.
 	static data_t t_prev[3] = {-1, 1, 0};  // never reset
@@ -57,10 +57,10 @@ void tfm_modulator(
 	if (reset) {
 		idle_mode = true;
 		last_delta = 0;
-		bit_cnt = 0;
+		odd_flag = false;
 		current_phase = 0;
-		bit_index = 32;       // Empty the buffer
-		is_burst_end = false; // Clear burst flag
+		bit_index = 32;        // Empty the buffer
+		is_burst_end = false;  // Clear burst flag
 		for(int i=0; i<G_LEN; i++) shift_reg[i] = 0;
 		return;
 	}
@@ -75,8 +75,8 @@ void tfm_modulator(
 		if (bit_in.read_nb(in_val)) {
 			// Data available in FIFO: Load the new 32-bit word
 			current_word = in_val.data;
-			is_burst_end = in_val.last; // TRUE only on the final word of the DMA burst (e.g., word 1024)
-			bit_index = 0;              // Reset bit pointer to LSB
+			is_burst_end = in_val.last;  // TRUE only on the final word of the DMA burst (e.g., word 1024)
+			bit_index = 0;               // Reset bit pointer to LSB
 			idle_mode = false;
 		} else {
 			// FIFO underflow: Enter idle mode
@@ -94,7 +94,7 @@ void tfm_modulator(
 
 	// --- Block 1 & 2: Differential Encoder ---
 	int delta;
-	if (bit_cnt % 2 == 0) {
+	if (!odd_flag) {
 		delta = current_bit ^ (1 - last_delta);  // Bitwise XOR, Ek=ek^(-(ok-1))
 	} else {
 		delta = current_bit ^ last_delta;  // Ok+1= ok+1^Ek
@@ -120,7 +120,7 @@ void tfm_modulator(
 	data_t half_mult = mult >> 1;  // Right shift
 
 	// 4. Apply sign based on even/odd bit count
-	data_t alpha = (bit_cnt % 2 == 0) ? (data_t)(-half_mult) : (data_t)(half_mult);
+	data_t alpha = (!odd_flag) ? (data_t)(-half_mult) : (data_t)(half_mult);
 	debug_alpha = alpha;
 
 	// Update history registers, init={-1, 1, 0}, update={1, t_now, 0}
@@ -203,7 +203,7 @@ void tfm_modulator(
 
 	// --- Update State Pointers ---
 	if (!idle_mode) {
-		bit_index++; // Move to the next bit in the 32-bit word
+		bit_index++;  // Move to the next bit in the 32-bit word
 	}
-	bit_cnt++;       // Global symbol counter advances regardless of idle state
+	odd_flag = !odd_flag;  // Global symbol counter advances regardless of idle state
 }
