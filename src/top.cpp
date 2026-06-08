@@ -44,7 +44,7 @@ void tfm_modulator(
 	static int bit_cnt = 0;
 
 	// Static array of size 3 to retain past states. The 3rd element is reserved for padding/redundancy.
-	static data_t t_prev[3] = {-1, 1, 0};
+	static data_t t_prev[3] = {-1, 1, 0};  // never reset
 	static data_t shift_reg[G_LEN] = {0};
 	static data_t current_phase = 0;
 
@@ -95,9 +95,9 @@ void tfm_modulator(
 	// --- Block 1 & 2: Differential Encoder ---
 	int delta;
 	if (bit_cnt % 2 == 0) {
-		delta = current_bit ^ (1 - last_delta);
+		delta = current_bit ^ (1 - last_delta);  // Bitwise XOR, Ek=ek^(-(ok-1))
 	} else {
-		delta = current_bit ^ last_delta;
+		delta = current_bit ^ last_delta;  // Ok+1= ok+1^Ek
 	}
 
 	// Always update the state for the next bit call
@@ -106,10 +106,10 @@ void tfm_modulator(
 	// Convert binary to bipolar format (+1.0 or -1.0), data_t is defined in top.h as ap_fixed<24, 8>.
 	// Out of 24 bits, 8 are for the integer part and 16 for the fractional part.
 	// Type casting to data_t. Ternary operator syntax: (condition) ? (true_val) : (false_val)
-	data_t t_now = (delta == 1) ? (data_t)1.0 : (data_t)-1.0;
+	data_t t_now = (delta == 1) ? (data_t)1.0 : (data_t)-1.0;  // alpha_i=-1 when ith bit=0, alpha_i=+1 when ith bit=1
 
 	// --- Block 3: SOQPSK Precoder ---
-	// Calculate alpha based on current and previous symbol states
+	// Calculate alpha based on current and previous symbol states, alpha_i=(-1)^(i+1)*alpha_i-1*(alpha_i-alpha_i-2)/2
 	// 1. Calculate the difference
 	data_t diff = t_now - t_prev[0];
 
@@ -117,13 +117,13 @@ void tfm_modulator(
 	data_t mult = t_prev[1] * diff;
 
 	// 3. Divide by 2 using hardware arithmetic right-shift (costs 0 DSP resources!)
-	data_t half_mult = mult >> 1;
+	data_t half_mult = mult >> 1;  // Right shift
 
 	// 4. Apply sign based on even/odd bit count
 	data_t alpha = (bit_cnt % 2 == 0) ? (data_t)(-half_mult) : (data_t)(half_mult);
 	debug_alpha = alpha;
 
-	// Update history registers
+	// Update history registers, init={-1, 1, 0}, update={1, t_now, 0}
 	t_prev[0] = t_prev[1];
 	t_prev[1] = t_now;
 
@@ -149,6 +149,7 @@ void tfm_modulator(
 
 		// Shift register for the FIR filter convolution
 		// All elements shift right by one index, and the new impulse is placed at index 0.
+		// G_LEN=L*SPS=8*16=128
 		for (int j = G_LEN - 1; j > 0; j--) {
 			shift_reg[j] = shift_reg[j-1];
 		}
