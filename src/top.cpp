@@ -11,17 +11,17 @@ static const data_t g_coeff[G_LEN] = {
 };
 
 void tfm_modulator(
-	// The '&' indicates a C++ reference. In HLS, it maps to a physical hardware port rather than passing data by value.
+	// The '&' indicates a C++ reference. In HLS, it maps to a physical hardware port rather than passing data by value
 	hls::stream<bit_pkt> &bit_in,
 	bool reset,
 	hls::stream<sample_pkt> &i_out,
 	hls::stream<sample_pkt> &q_out,
-	int &debug_current_bit,  // 1 bit 1 function call
-	data_t &debug_alpha,  // 1 bit 1 function call
+	int &debug_current_bit,  // 1 debug_current_bit 1 function call
+	data_t &debug_alpha,  // 1 debug_alpha 1 function call
 	hls::stream<data_t> &debug_pulse,
 	hls::stream<data_t> &debug_phase,
 	hls::stream<data_t> &debug_freq
-) {
+)	{
 	// Hardware interface pragmas for Vitis HLS (AXI-Lite for control, AXI-Stream for data)
 	// Map data ports to AXI4-Stream
 	#pragma HLS INTERFACE axis port=bit_in
@@ -40,13 +40,13 @@ void tfm_modulator(
 
 	// Internal state registers (Static variables map to Flip-Flops or BRAM)
 	static bool idle_mode = true;
-	static int last_delta = 0;
+	static int last_delta = 0;  // I32
 	static bool odd_flag = false;
 
-	// Static array of size 3 to retain past states. The 3rd element is reserved for padding/redundancy.
-	static data_t t_prev[3] = {-1, 1, 0};  // never reset
-	static data_t shift_reg[G_LEN] = {0};
-	static data_t current_phase = 0;
+	// Static array of size 3 to retain past states. The 3rd element is reserved for padding/redundancy
+	static data_t t_prev[3] = {-1, 1, 0};  // Never reset
+	static data_t shift_reg[G_LEN] = {0};  // Initialize G_LEN array (G_LEN=16*8=128)
+	static data_t current_phase = 0;  // data_t is 24-bit word length, 8-bit integer part
 
 	// --- Serializer (Parallel-to-Serial) State Registers ---
 	static uint32_t current_word = 0;  // Holds the current 32-bit data chunk
@@ -65,11 +65,12 @@ void tfm_modulator(
 		return;
 	}
 
-	int current_bit;
+	int current_bit;  // Dummy data or extract the current bit
 
 	// --- State Machine: Non-blocking Data Fetch & Serialization ---
 	// If the 32-bit buffer is fully consumed (index reaches 32), fetch the next word
-	// If the stream is empty, the IP enters idle mode and outputs dummy data to maintain phase continuity.
+	// If the stream is empty, the IP enters idle mode and outputs dummy data to maintain phase continuity
+	// bit_pkt is 32-bit
 	if (bit_index >= 32) {
 		bit_pkt in_val;
 		if (bit_in.read_nb(in_val)) {
@@ -88,7 +89,7 @@ void tfm_modulator(
 	if (idle_mode) {
 		current_bit = 0; // Dummy data to maintain continuous RF carrier phase
 	} else {
-		current_bit = (current_word >> bit_index) & 0x1;  // Right shift and mask
+		current_bit = (current_word >> bit_index) & 0x1;  // Right shift and mask from bit_index=0
 	}
 	debug_current_bit = current_bit;
 
@@ -140,7 +141,7 @@ void tfm_modulator(
 		// ----------------------------------------------------------
 
 	// --- Block 4 & 5: Upsampling, FIR Filtering, and Phase Integration ---
-	for (int s = 0; s < SPS; s++) {
+	for (int s = 0; s < SPS; s++) {  // SPS=16
 		#pragma HLS PIPELINE II=1
 
 		// Upsampling: Insert impulse at the first sample, zero-stuff the rest
@@ -148,22 +149,22 @@ void tfm_modulator(
 		debug_pulse.write(impulse);
 
 		// Shift register for the FIR filter convolution
-		// All elements shift right by one index, and the new impulse is placed at index 0.
+		// All elements shift right by one index, and the new impulse is placed at index 0
 		// G_LEN=L*SPS=8*16=128
 		for (int j = G_LEN - 1; j > 0; j--) {
-			shift_reg[j] = shift_reg[j-1];
+			shift_reg[j] = shift_reg[j-1];  // shift_reg is G_LEN array (G_LEN=16*8=128)
 		}
-		shift_reg[0] = impulse;
+		shift_reg[0] = impulse;  // impulse inserts into shift_reg 16 times
 
 		// FIR filter convolution (Multiply-Accumulate)
-		data_t freq_dev = 0;
+		data_t freq_dev = 0;  // Reset freq_dev to 0
 		for (int j = 0; j < G_LEN; j++) {
 			#pragma HLS UNROLL factor=16  // Unroll loop to utilize parallel DSP slices
 			freq_dev += shift_reg[j] * g_coeff[j];  // FIR convolution
 		}
 
 		// Phase Integration (Accumulator), accumulate freq_dev to calculate the current_phase
-		current_phase += freq_dev * (data_t)(3.1415926535 / (double)SPS);
+		current_phase += freq_dev * (data_t)(3.1415926535 / (double)SPS);  // phase = 2*pi*h*integral(f(t)*dt, h=0.5
 
 		// Phase Wrapping: Bound the phase between -PI and +PI
 		if (current_phase > (data_t)3.1415926535) current_phase -= (data_t)6.283185307;
@@ -174,7 +175,7 @@ void tfm_modulator(
 
 		// --- Output Formatting & TLAST Propagation ---
 		// out_i.data expects raw bits, while hls::cos returns a fixed-point object.
-		sample_pkt out_i, out_q;
+		sample_pkt out_i, out_q;  // sample_pkt is 24-bit
 
 		// Extract the raw 24 bits from the fixed-point result
 		// 1. Force the output of hls::cos/sin to align with our 24-bit data_t format

@@ -8,12 +8,12 @@
 #include <hls_stream.h>   // Required for hls::stream interface
 #include <ap_axi_sdata.h> // Required for AXI-Stream packet structures (ap_axiu)
 
-// Fixed-point type definition: 24-bit word length, 8-bit integer part.
-// Range is -128 to +127.99..., resolution is 2^-16 (~0.000015).
+// Fixed-point type definition: 24-bit word length, 8-bit integer part
+// Range is -128 to +127.99..., resolution is 2^-16 (~0.000015)
 typedef ap_fixed<24, 8> data_t;
 
 // SOQPSK-TG parameters
-#define SPS 16  // Upsampling, 16 sample per symbol, each cycle has 16 SPS points.
+#define SPS 16  // Upsampling, 16 sample per symbol, each cycle has 16 SPS points
 #define L 8  // Because the energy of one bit needs to last for L=8 cycles
 #define G_LEN (L * SPS)  // length of w(t) and g(t)
 
