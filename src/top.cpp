@@ -182,7 +182,7 @@ void tfm_modulator(
 		data_t cos_val = hls::cos(current_phase);
 		data_t sin_val = hls::sin(current_phase);
 
-		// 2. Safely extract the 24 raw bits into the packet payload
+		// 2. Safely extract the 24 raw bits into the packet payload, cos_val is fixed-point object, out_i.data is raw bits
 		out_i.data = cos_val.range(23, 0);
 		out_q.data = sin_val.range(23, 0);
 

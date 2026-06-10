@@ -21,6 +21,7 @@ int main() {
 	// --------------------------------------------------------
 	// We will send 1 words (32 bits total) to the IP
 	// 0xDE747267 = 0b11011110011101000111001001100111 = [1,1,1,0,0,1,1,0,0,1,0,0,1,1,1,0,0,0,1,0,1,1,1,0,0,1,1,1,1,0,1,1]
+	//                LSB                            MSB  MSB                                                           LSB
 	const int NUM_WORDS = 2;
 	uint32_t test_data[NUM_WORDS] = {
 		0xDE747267,  // Ends with a few 1s, mostly 0s
