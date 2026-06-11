@@ -15,12 +15,15 @@ void tfm_modulator(
 	hls::stream<bit_pkt> &bit_in,
 	bool reset,
 	hls::stream<sample_pkt> &i_out,
-	hls::stream<sample_pkt> &q_out,
-	int &debug_current_bit,  // 1 debug_current_bit 1 function call
-	data_t &debug_alpha,  // 1 debug_alpha 1 function call
-	hls::stream<data_t> &debug_pulse,
-	hls::stream<data_t> &debug_phase,
-	hls::stream<data_t> &debug_freq
+	hls::stream<sample_pkt> &q_out
+
+	#ifdef HW_DEBUG_MODE
+		, int &debug_current_bit  // 1 debug_current_bit 1 function call
+		, data_t &debug_alpha  // 1 debug_alpha 1 function call
+		, hls::stream<data_t> &debug_pulse
+		, hls::stream<data_t> &debug_phase
+		, hls::stream<data_t> &debug_freq
+	#endif
 )	{
 	// Hardware interface pragmas for Vitis HLS (AXI-Lite for control, AXI-Stream for data)
 	// Map data ports to AXI4-Stream
@@ -28,15 +31,17 @@ void tfm_modulator(
 	#pragma HLS INTERFACE axis port=i_out
 	#pragma HLS INTERFACE axis port=q_out
 
-	#pragma HLS INTERFACE ap_none port=debug_current_bit
-	#pragma HLS INTERFACE ap_none port=debug_alpha
-	#pragma HLS INTERFACE axis port=debug_pulse
-	#pragma HLS INTERFACE axis port=debug_phase
-	#pragma HLS INTERFACE axis port=debug_freq
+	#ifdef HW_DEBUG_MODE
+		#pragma HLS INTERFACE ap_none port=debug_current_bit
+		#pragma HLS INTERFACE ap_none port=debug_alpha
+		#pragma HLS INTERFACE axis port=debug_pulse
+		#pragma HLS INTERFACE axis port=debug_phase
+		#pragma HLS INTERFACE axis port=debug_freq
+	#endif
 
-	// Map control signals (reset, start, done, idle) to AXI4-Lite
-	#pragma HLS INTERFACE s_axilite port=reset bundle=CTRL
-	#pragma HLS INTERFACE s_axilite port=return bundle=CTRL
+	// Map control signals (start, done, idle, ready) to AXI4-Lite
+	#pragma HLS INTERFACE s_axilite port=reset bundle=CTRL  // Mapping reset to AXI4-Lite
+	#pragma HLS INTERFACE s_axilite port=return bundle=CTRL  // Mapping start, done, idle, ready to AXI4-Lite
 
 	// Internal state registers (Static variables map to Flip-Flops or BRAM)
 	static bool idle_mode = true;
@@ -46,12 +51,12 @@ void tfm_modulator(
 	// Static array of size 3 to retain past states. The 3rd element is reserved for padding/redundancy
 	static data_t t_prev[3] = {-1, 1, 0};  // Never reset
 	static data_t shift_reg[G_LEN] = {0};  // Initialize G_LEN array (G_LEN=16*8=128)
-	static data_t current_phase = 0;  // data_t is 24-bit word length, 8-bit integer part
+	static data_t current_phase = 0;  // data_t is 24-bit length, 8-bit integer part
 
 	// --- Serializer (Parallel-to-Serial) State Registers ---
-	static uint32_t current_word = 0;  // Holds the current 32-bit data chunk
-	static int bit_index = 32;         // 32 means the buffer is empty and needs new data
-	static bool is_burst_end = false;  // Flags if the current 32-bit word is the end of the DMA burst
+	static uint8_t current_byte = 0;  // Holds the current 8-bit data chunk
+	static int bit_index = 8;         // 8 means the buffer is empty and needs new data
+	static bool is_burst_end = false;  // Flags if the current 8-bit byte is the end of the DMA burst
 
 	// Hardware reset logic
 	if (reset) {
@@ -59,7 +64,7 @@ void tfm_modulator(
 		last_delta = 0;
 		odd_flag = false;
 		current_phase = 0;
-		bit_index = 32;        // Empty the buffer
+		bit_index = 8;        // Empty the buffer
 		is_burst_end = false;  // Clear burst flag
 		for(int i=0; i<G_LEN; i++) shift_reg[i] = 0;
 		return;
@@ -68,15 +73,15 @@ void tfm_modulator(
 	int current_bit;  // Dummy data or extract the current bit
 
 	// --- State Machine: Non-blocking Data Fetch & Serialization ---
-	// If the 32-bit buffer is fully consumed (index reaches 32), fetch the next word
+	// If the 8-bit buffer is fully consumed (index reaches 8), fetch the next byte
 	// If the stream is empty, the IP enters idle mode and outputs dummy data to maintain phase continuity
 	// bit_pkt is 32-bit
-	if (bit_index >= 32) {
+	if (bit_index >= 8) {
 		bit_pkt in_val;
 		if (bit_in.read_nb(in_val)) {
-			// Data available in FIFO: Load the new 32-bit word
-			current_word = in_val.data;
-			is_burst_end = in_val.last;  // TRUE only on the final word of the DMA burst (e.g., word 1024)
+			// Data available in FIFO: Load the new byte
+			current_byte = in_val.data;
+			is_burst_end = in_val.last;  // TRUE only on the final byte of the DMA burst (e.g., byte 1024)
 			bit_index = 0;               // Reset bit pointer to LSB
 			idle_mode = false;
 		} else {
@@ -89,9 +94,12 @@ void tfm_modulator(
 	if (idle_mode) {
 		current_bit = 0; // Dummy data to maintain continuous RF carrier phase
 	} else {
-		current_bit = (current_word >> bit_index) & 0x1;  // Right shift and mask from bit_index=0
+		current_bit = (current_byte >> bit_index) & 0x1;  // Right shift and mask from bit_index=0
 	}
+
+	#ifdef HW_DEBUG_MODE
 	debug_current_bit = current_bit;
+	#endif
 
 	// --- Block 1 & 2: Differential Encoder ---
 	int delta;
@@ -122,7 +130,10 @@ void tfm_modulator(
 
 	// 4. Apply sign based on even/odd bit count
 	data_t alpha = (!odd_flag) ? (data_t)(-half_mult) : (data_t)(half_mult);
+
+	#ifdef HW_DEBUG_MODE
 	debug_alpha = alpha;
+	#endif
 
 	// Update history registers, init={-1, 1, 0}, update={1, t_now, 0}
 	t_prev[0] = t_prev[1];
@@ -131,7 +142,7 @@ void tfm_modulator(
 	// --- NEW: Debug print (Only active during C Simulation) ---
 	#ifndef __SYNTHESIS__
 		// Convert fixed-point alpha to double for printing
-		std::cout << "[IP Debug] Bit Index: " << (bit_index - 1)
+		std::cout << "[IP Debug] Bit Index: " << bit_index
 				<< " | Current Bit: " << current_bit
 				<< " | t_now: " << t_now
 				<< " | Alpha: " << alpha.to_double()
@@ -141,12 +152,16 @@ void tfm_modulator(
 		// ----------------------------------------------------------
 
 	// --- Block 4 & 5: Upsampling, FIR Filtering, and Phase Integration ---
+	// Outside pipelining, inside unrolling
 	for (int s = 0; s < SPS; s++) {  // SPS=16
-		#pragma HLS PIPELINE II=1
+		#pragma HLS PIPELINE II=1  // II is initiation interval
 
 		// Upsampling: Insert impulse at the first sample, zero-stuff the rest
 		data_t impulse = (s == 0) ? alpha : (data_t)0;
+
+		#ifdef HW_DEBUG_MODE
 		debug_pulse.write(impulse);
+		#endif
 
 		// Shift register for the FIR filter convolution
 		// All elements shift right by one index, and the new impulse is placed at index 0
@@ -170,8 +185,10 @@ void tfm_modulator(
 		if (current_phase > (data_t)3.1415926535) current_phase -= (data_t)6.283185307;
 		else if (current_phase < (data_t)-3.1415926535) current_phase += (data_t)6.283185307;
 
+		#ifdef HW_DEBUG_MODE
 		debug_phase.write(current_phase);
 		debug_freq.write(freq_dev);
+		#endif
 
 		// --- Output Formatting & TLAST Propagation ---
 		// out_i.data expects raw bits, while hls::cos returns a fixed-point object.
@@ -188,10 +205,10 @@ void tfm_modulator(
 
 		// Assert output TLAST ONLY IF:
 		// 1. IP is not in idle mode
-		// 2. We are processing the final 32-bit word of the DMA burst
-		// 3. We are on the final bit (bit 31) of that word
+		// 2. We are processing the final byte of the DMA burst
+		// 3. We are on the final bit (bit 7) of that byte
 		// 4. We are generating the final sample (SPS - 1) of that bit
-		bool real_last = (!idle_mode && is_burst_end && (bit_index == 31) && (s == SPS - 1));
+		bool real_last = (!idle_mode && is_burst_end && (bit_index == 7) && (s == SPS - 1));
 		out_i.last = real_last;
 		out_q.last = real_last;
 
@@ -204,7 +221,7 @@ void tfm_modulator(
 
 	// --- Update State Pointers ---
 	if (!idle_mode) {
-		bit_index++;  // Move to the next bit in the 32-bit word
+		bit_index++;  // Move to the next bit in the byte
 	}
 	odd_flag = !odd_flag;  // Global symbol counter advances regardless of idle state
 }

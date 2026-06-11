@@ -59,6 +59,38 @@
 4. 在硬體合成階段（C Synthesis）: HLS 工具準備把你的 C++ 轉成硬體電路（Verilog/VHDL）. 但是，硬體晶片（FPGA）是沒有「螢幕」可以印出字串的! 如果硬體合成工具看到 std::cout, 它會不知道該怎麼把它轉成電路, 直接報錯當機.
 5. 解決方案: 當按下「硬體合成」時, HLS 工具會自動在背景定義 __SYNTHESIS__. 這時 #ifndef __SYNTHESIS__ 條件失敗, 編譯器就會直接把這整段 std::cout 的除錯程式碼當作透明的（完全忽略）, 不會把它轉換成硬體電路.
 
+## AXI-Stream 協定
+### 核心握手訊號
+1. TVALID (Master -> Slave, 必須有): 發送端（Master）告訴接收端（Slave）: 「我現在放在 TDATA 上的資料是有效的, 你隨時可以拿走.」
+2. TREADY (Slave -> Master, 可選，但強烈建議有): 接收端告訴發送端: 「我現在有空, 準備好接收新資料了.」
+### 資料與結構訊號
+1. TDATA (Master -> Slave, 可選, 但通常都有): 資料主體, 它的寬度可以是 8, 16, 32, 64, 128... 甚至到 1024-bit.
+2. TKEEP (Master -> Slave, 可選): 位元組有效指示（Byte Qualifier）. 當傳輸不是整數倍字組的資料時, 用來標記哪些 Byte 是有效資料.
+3. TSTRB (Master -> Slave, 可選): 位元組選通（Strobe / Position Qualifier）. TSTRB 是用來支援「稀疏矩陣/稀疏流（Sparse Stream）」.
+4. TLAST (Master -> Slave, 可選): 封包結束指示（Packet Boundary）. 用來告訴接收端: 「這是這一個 Data Packet 的最後一筆資料.」
+### 路由與標籤訊號
+1. TID (Master -> Slave, 可選): 資料流 ID（Stream Identifier）. 多路 ADC 採樣, 可以用 TID 來區分這筆資料是屬於「通道 0」還是「通道 1」.
+2. TDEST (Master -> Slave, 可選): 目的地路由（Destination Identifier）. 告訴 AXI-Stream Switch（交換器）這筆資料要送去哪一個 downstream IP.
+3. TUSER (Master -> Slave, 可選): 用戶自定義訊號（User-defined Sideband）. 這是官方留給開發者的「傳小抄」通道, 協定本身不管裡面裝什麼.
+### 全域系統訊號
+1. ACLK (全域, 必須): 時脈訊號. 所有的資料採樣、握手都是在 ACLK 的上升沿（Rising Edge）觸發.
+2. ARESETn (全域, 必須): 非同步重置訊號, 低電位有效（Active Low）.
+
+## AXI4-Lite 協定
+### 寫入地址通道 (Write Address Channel - AW)
+### 寫入資料通道 (Write Data Channel - W)
+### 寫入回應通道 (Write Response Channel - B)
+### 讀取地址通道 (Read Address Channel - AR)
+### 讀取資料通道 (Read Data Channel - R)
+### 全域訊號 (Global Signals)
+
+## Block-Level Control
+1. 在預設情況下, 當你用 C++ 寫了一個硬體函式（例如你的 tfm_modulator）, 這個 IP 合成出來後, 必須要有幾個基本的腳位來讓別人控制它.
+2. ap_start: 告訴 IP「開始運算!」.
+3. ap_done: IP 算完一輪後, 會拉高這個訊號說「我算完了!」.
+4. ap_idle: IP 告訴外面「我現在閒閒沒事做, 正在發呆」.
+5. ap_ready: IP 告訴外面「我準備好接收下一筆新任務了」.
+
 # 問題與解法
 ## 編譯器在跑模擬 (CSIM) 時, 找不到你的標頭檔 top.h
 1. 點擊工具列的 Project -> Project Settings

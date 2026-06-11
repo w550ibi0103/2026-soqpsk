@@ -10,32 +10,48 @@ int main() {
 	hls::stream<bit_pkt> bit_in("bit_in_stream");
 	hls::stream<sample_pkt> i_out("i_out_stream");
 	hls::stream<sample_pkt> q_out("q_out_stream");
-	int debug_current_bit;
-	data_t debug_alpha;
-	hls::stream<data_t> debug_pulse;
-	hls::stream<data_t> debug_phase;
-	hls::stream<data_t> debug_freq;
+	#ifdef HW_DEBUG_MODE
+		int debug_current_bit;
+		data_t debug_alpha;
+		hls::stream<data_t> debug_pulse;
+		hls::stream<data_t> debug_phase;
+		hls::stream<data_t> debug_freq;
+	#endif
 
 	// --------------------------------------------------------
 	// 2. Prepare test vectors (Simulating DMA behavior)
 	// --------------------------------------------------------
-	// We will send 1 words (32 bits total) to the IP
-	// 0xDE747267 = 0b11011110011101000111001001100111 = [1,1,1,0,0,1,1,0,0,1,0,0,1,1,1,0,0,0,1,0,1,1,1,0,0,1,1,1,1,0,1,1]
-	//                LSB                            MSB  MSB                                                           LSB
-	const int NUM_WORDS = 2;
-	uint32_t test_data[NUM_WORDS] = {
-		0xDE747267,  // Ends with a few 1s, mostly 0s
-		0xDE747267
+	// In Python: [1,1,1,0,0,1,1,0,0,1,0,0,1,1,1,0,0,0,1,0,1,1,1,0,0,1,1,1,1,0,1,1], index 0 first
+	// We will send 8 bytes (64 bits total) to the IP
+	// 0x67 = 0b'01100111
+	// 0x72 = 0b'01110010
+	// 0x74 = 0b'01110100
+	// 0xDE = 0b'11011110
+	// 0x67 = 0b'01100111
+	// 0x72 = 0b'01110010
+	// 0x74 = 0b'01110100
+	// 0xDE = 0b'11011110
+	// IP processes LSB first
+	const int NUM_BYTES = 8;
+	uint32_t test_data[NUM_BYTES] = {
+		0x67,  // Ends with a few 1s, mostly 0s
+		0x72,
+		0x74,
+		0xDE,
+		0x67,
+		0x72,
+		0x74,
+		0xDE
 	};
 
 	std::cout << ">> Starting SOQPSK-TG IP Simulation..." << std::endl;
 
 	// Push data into the input stream (Simulating DMA writing to FIFO)
-	for (int i = 0; i < NUM_WORDS; i++) {
+	for (int i = 0; i < NUM_BYTES; i++) {
 		bit_pkt pkt;
 		pkt.data = test_data[i];
 		// Assert TLAST on the final word of the burst
-		pkt.last = (i == NUM_WORDS - 1);
+		pkt.last = (i == NUM_BYTES - 1);
 		pkt.keep = -1;
 		bit_in.write(pkt);
 	}
@@ -44,25 +60,34 @@ int main() {
 	// 3. Reset the IP
 	// --------------------------------------------------------
 	// Call the IP once with reset=true to initialize static variables
-	tfm_modulator(bit_in, true, i_out, q_out, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq);
+	tfm_modulator(bit_in, true, i_out, q_out
+		#ifdef HW_DEBUG_MODE
+			, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq
+		#endif
+	);
 
 	// --------------------------------------------------------
 	// 4. Run the IP
 	// --------------------------------------------------------
 	// Each function call processes exactly 1 bit and generates 16 samples.
 	// 2 words * 32 bits/word = 64 bits (64 function calls).
-	// We run an extra 10 calls to test the "Idle Mode" (underflow protection).
-	int total_calls = (NUM_WORDS * 32);
+	// We run an extra 10 calls to test the "Idle Mode" (underflow protection)
+	int total_calls = (NUM_BYTES * 8);
 
 	for (int i = 0; i < total_calls; i++) {
 		// Call the IP with reset=false
-		tfm_modulator(bit_in, false, i_out, q_out, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq);
-		for (int i = 0; i < SPS; i++) {
-		    data_t db_pulse = debug_pulse.read();
-		    data_t db_phase = debug_phase.read();
-		    data_t db_freq = debug_freq.read();
+		tfm_modulator(bit_in, false, i_out, q_out
+			#ifdef HW_DEBUG_MODE
+				, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq
+			#endif
+		);
+		#ifdef HW_DEBUG_MODE
+			for (int j = 0; j < SPS; j++) {
+				data_t db_pulse = debug_pulse.read();
+				data_t db_phase = debug_phase.read();
+				data_t db_freq = debug_freq.read();
 		}
-
+		#endif
 	}
 
 	// --------------------------------------------------------

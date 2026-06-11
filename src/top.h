@@ -2,6 +2,11 @@
 #ifndef __TOP_H__
 #define __TOP_H__
 
+//  --- *********************************** Important *********************************** ---
+//  --- Only for debugging during C simulation, comment out this line if release IP ---
+#define HW_DEBUG_MODE
+//  --- *********************************** Important *********************************** ---
+
 // Vitis HLS libraries for fixed-point arithmetic and math functions
 #include <ap_fixed.h>
 #include <hls_math.h>
@@ -18,9 +23,9 @@ typedef ap_fixed<24, 8> data_t;
 #define G_LEN (L * SPS)  // length of w(t) and g(t)
 
 // --- AXI-Stream packet type definitions ---
-// bit_pkt: 32-bit AXI-Stream packet used to receive a 1-bit payload
+// bit_pkt: 8-bit AXI-Stream packet used to receive a 1-bit payload
 // ap_axiu<Data Width, User Width, ID Width, Destination Width>
-typedef ap_axiu<32, 0, 0, 0> bit_pkt;
+typedef ap_axiu<8, 0, 0, 0> bit_pkt;
 
 // sample_pkt: 24-bit AXI-Stream packet used to output I/Q samples
 // ap_axiu<Data Width, User Width, ID Width, Destination Width>
@@ -31,12 +36,14 @@ void tfm_modulator(
 	hls::stream<bit_pkt> &bit_in,
 	bool reset,
 	hls::stream<sample_pkt> &i_out,
-	hls::stream<sample_pkt> &q_out,
-	int &debug_current_bit,
-	data_t &debug_alpha,
-	hls::stream<data_t> &debug_pulse,
-	hls::stream<data_t> &debug_phase,
-	hls::stream<data_t> &debug_freq
+	hls::stream<sample_pkt> &q_out
+	#ifdef HW_DEBUG_MODE
+		, int &debug_current_bit
+		, data_t &debug_alpha
+		, hls::stream<data_t> &debug_pulse
+		, hls::stream<data_t> &debug_phase
+		, hls::stream<data_t> &debug_freq
+	#endif
 );
 
 #endif
