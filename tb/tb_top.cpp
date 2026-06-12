@@ -69,10 +69,10 @@ int main() {
 	// --------------------------------------------------------
 	// 4. Run the IP
 	// --------------------------------------------------------
-	// Each function call processes exactly 1 bit and generates 16 samples.
-	// 2 words * 32 bits/word = 64 bits (64 function calls).
-	// We run an extra 10 calls to test the "Idle Mode" (underflow protection)
-	int total_calls = (NUM_BYTES * 8);
+	// [OPTIMIZED] Each function call now processes 1 full byte (8 bits × 16 SPS = 128 samples).
+	// Previously: total_calls = NUM_BYTES * 8 (one call per bit)
+	// Now:        total_calls = NUM_BYTES     (one call per byte)
+	int total_calls = NUM_BYTES;
 
 	for (int i = 0; i < total_calls; i++) {
 		// Call the IP with reset=false
@@ -82,7 +82,8 @@ int main() {
 			#endif
 		);
 		#ifdef HW_DEBUG_MODE
-			for (int j = 0; j < SPS; j++) {
+			// Each call now produces 128 debug samples (8 bits × 16 SPS)
+			for (int j = 0; j < SPS * 8; j++) {
 				data_t db_pulse = debug_pulse.read();
 				data_t db_phase = debug_phase.read();
 				data_t db_freq = debug_freq.read();
