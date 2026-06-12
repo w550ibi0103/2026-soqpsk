@@ -15,7 +15,9 @@
 
 // Fixed-point type definition: 24-bit word length, 8-bit integer part
 // Range is -128 to +127.99..., resolution is 2^-16 (~0.000015)
-typedef ap_fixed<24, 8> data_t;
+// Fixed-point type definition: 16-bit word length, 4-bit integer part
+// Range is -8 to +7.99..., resolution is 2^-12 (~0.000244)
+typedef ap_fixed<16, 4> data_t;
 
 // SOQPSK-TG parameters
 #define SPS 16  // Upsampling, 16 sample per symbol, each cycle has 16 SPS points
@@ -27,9 +29,9 @@ typedef ap_fixed<24, 8> data_t;
 // ap_axiu<Data Width, User Width, ID Width, Destination Width>
 typedef ap_axiu<8, 0, 0, 0> bit_pkt;
 
-// sample_pkt: 24-bit AXI-Stream packet used to output I/Q samples
+// sample_pkt: 16-bit AXI-Stream packet used to output I/Q samples
 // ap_axiu<Data Width, User Width, ID Width, Destination Width>
-typedef ap_axiu<24, 0, 0, 0> sample_pkt;
+typedef ap_axiu<16, 0, 0, 0> sample_pkt;
 
 // Top-level function declaration
 void tfm_modulator(

@@ -104,10 +104,10 @@ int main() {
 		sample_pkt i_pkt = i_out.read();
 		sample_pkt q_pkt = q_out.read();
 
-		// Convert the raw 24-bit integer back to floating point for verification
-		// Reinterpret the raw bits as our ap_fixed<24,8> data_t
-		data_t i_val; i_val.range(23,0) = i_pkt.data;
-		data_t q_val; q_val.range(23,0) = q_pkt.data;
+		// Convert the raw 16-bit integer back to floating point for verification
+		// Reinterpret the raw bits as our ap_fixed<16,4> data_t
+		data_t i_val; i_val.range(15,0) = i_pkt.data;
+		data_t q_val; q_val.range(15,0) = q_pkt.data;
 
 		outfile << sample_idx << ","
 				<< i_val.to_double() << ","

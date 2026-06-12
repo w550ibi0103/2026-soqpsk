@@ -51,7 +51,7 @@ void tfm_modulator(
 	// Static array of size 3 to retain past states. The 3rd element is reserved for padding/redundancy
 	static data_t t_prev[3] = {-1, 1, 0};  // Never reset
 	static data_t shift_reg[G_LEN] = {0};  // Initialize G_LEN array (G_LEN=16*8=128)
-	static data_t current_phase = 0;  // data_t is 24-bit length, 8-bit integer part
+	static data_t current_phase = 0;  // data_t is 16-bit length, 4-bit integer part
 
 	// --- Serializer (Parallel-to-Serial) State Registers ---
 	static uint8_t current_byte = 0;  // Holds the current 8-bit data chunk
@@ -112,8 +112,8 @@ void tfm_modulator(
 	// Always update the state for the next bit call
 	last_delta = delta;
 
-	// Convert binary to bipolar format (+1.0 or -1.0), data_t is defined in top.h as ap_fixed<24, 8>.
-	// Out of 24 bits, 8 are for the integer part and 16 for the fractional part.
+	// Convert binary to bipolar format (+1.0 or -1.0), data_t is defined in top.h as ap_fixed<16, 4>.
+	// Out of 16 bits, 4 are for the integer part and 12 for the fractional part.
 	// Type casting to data_t. Ternary operator syntax: (condition) ? (true_val) : (false_val)
 	data_t t_now = (delta == 1) ? (data_t)1.0 : (data_t)-1.0;  // alpha_i=-1 when ith bit=0, alpha_i=+1 when ith bit=1
 
@@ -174,7 +174,7 @@ void tfm_modulator(
 		// FIR filter convolution (Multiply-Accumulate)
 		data_t freq_dev = 0;  // Reset freq_dev to 0
 		for (int j = 0; j < G_LEN; j++) {
-			#pragma HLS UNROLL factor=16  // Unroll loop to utilize parallel DSP slices
+			#pragma HLS UNROLL factor=128  // Unroll loop to utilize parallel DSP slices
 			freq_dev += shift_reg[j] * g_coeff[j];  // FIR convolution
 		}
 
@@ -192,16 +192,16 @@ void tfm_modulator(
 
 		// --- Output Formatting & TLAST Propagation ---
 		// out_i.data expects raw bits, while hls::cos returns a fixed-point object.
-		sample_pkt out_i, out_q;  // sample_pkt is 24-bit
+		sample_pkt out_i, out_q;  // sample_pkt is 16-bit
 
-		// Extract the raw 24 bits from the fixed-point result
-		// 1. Force the output of hls::cos/sin to align with our 24-bit data_t format
+		// Extract the raw 16 bits from the fixed-point result
+		// 1. Force the output of hls::cos/sin to align with our 16-bit data_t format
 		data_t cos_val = hls::cos(current_phase);
 		data_t sin_val = hls::sin(current_phase);
 
-		// 2. Safely extract the 24 raw bits into the packet payload, cos_val is fixed-point object, out_i.data is raw bits
-		out_i.data = cos_val.range(23, 0);
-		out_q.data = sin_val.range(23, 0);
+		// 2. Safely extract the 16 raw bits into the packet payload, cos_val is fixed-point object, out_i.data is raw bits
+		out_i.data = cos_val.range(15, 0);
+		out_q.data = sin_val.range(15, 0);
 
 		// Assert output TLAST ONLY IF:
 		// 1. IP is not in idle mode
