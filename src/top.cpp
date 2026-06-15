@@ -12,17 +12,17 @@ static const data_t g_coeff[G_LEN] = {
 
 void tfm_modulator(
 	// The '&' indicates a C++ reference. In HLS, it maps to a physical hardware port rather than passing data by value
-	hls::stream<bit_pkt> &bit_in,
+	hls::stream<bit_pkt> &bit_in,  // 8-bits
 	bool reset,
-	hls::stream<sample_pkt> &i_out,
-	hls::stream<sample_pkt> &q_out
+	hls::stream<sample_pkt> &i_out,  // 16-bits
+	hls::stream<sample_pkt> &q_out  // 16-bits
 
 	#ifdef HW_DEBUG_MODE
 		, int &debug_current_bit  // 1 debug_current_bit 1 function call
 		, data_t &debug_alpha  // 1 debug_alpha 1 function call
-		, hls::stream<data_t> &debug_pulse
-		, hls::stream<data_t> &debug_phase
-		, hls::stream<data_t> &debug_freq
+		, hls::stream<data_t> &debug_pulse  // 16-bit word length, 4-bit integer part
+		, hls::stream<data_t> &debug_phase  // 16-bit word length, 4-bit integer part
+		, hls::stream<data_t> &debug_freq  // 16-bit word length, 4-bit integer part
 	#endif
 )	{
 	// Hardware interface pragmas for Vitis HLS (AXI-Lite for control, AXI-Stream for data)
@@ -52,7 +52,7 @@ void tfm_modulator(
 	// Static array of size 3 to retain past states. The 3rd element is reserved for padding/redundancy
 	static data_t t_prev[3] = {-1, 1, 0};  // Never reset
 
-	// Shift register for FIR filter — FULLY PARTITIONED into individual registers
+	// Shift register for FIR filter ?? FULLY PARTITIONED into individual registers
 	// This eliminates the BRAM bottleneck: all 128 values are accessible in a single cycle
 	static data_t shift_reg[G_LEN] = {0};
 	#pragma HLS ARRAY_PARTITION variable=shift_reg complete dim=1
@@ -96,7 +96,7 @@ void tfm_modulator(
 	}
 
 	// =====================================================================
-	// Main processing loop: 8 bits × 16 SPS = 128 samples per function call
+	// Main processing loop: 8 bits ?? 16 SPS = 128 samples per function call
 	// =====================================================================
 	// Flattened loop replaces the old per-bit function call + inner SPS loop.
 	// bit_idx = iter / 16 (which bit, 0-7), s = iter % 16 (which sample, 0-15)
