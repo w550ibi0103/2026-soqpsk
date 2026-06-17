@@ -91,6 +91,14 @@
 4. ap_idle: IP 告訴外面「我現在閒閒沒事做, 正在發呆」.
 5. ap_ready: IP 告訴外面「我準備好接收下一筆新任務了」.
 
+## Cygwin 使用教學
+1. Cygwin 視角: /cygdrive/c/XilinxWorkspace/Vivado/hdl/...
+2. 永久寫入環境變數: echo "export PATH=\$PATH:/cygdrive/c/Xilinx/Vivado/2023.2/bin" >> ~/.bashrc
+3. 套用設定: source ~/.bashrc
+4. 切換至專案目錄: cd /cygdrive/c/XilinxWorkspace/Vivado/hdl/projects/adrv9009/zcu102
+5. 清理殘留檔案: git clean -xdf
+6. 開始編譯: make
+
 # 問題與解法
 ## 編譯器在跑模擬 (CSIM) 時, 找不到你的標頭檔 top.h
 1. 點擊工具列的 Project -> Project Settings
@@ -99,3 +107,16 @@
 4. 點擊 Edit CFLAGS 按鈕
 5. 輸入: -I../src (假設你的 top.h 放在與 tb 並列的 src 資料夾中)
 6. 同樣的操作也要在 Synthesis 標籤頁對 top.cpp 做一次 (設定其 CFLAGS)
+
+## 如何還原 Analog Device Reference Design?
+1. https://github.com/analogdevicesinc/hdl.git 下載
+2. 切換到對應電腦安裝的版本的分支, 如電腦安裝 2023.2, 分支切換到 hdl_2023_r2
+3. 開啟 Vivado Tcl Shell, cd C:/XilinxWorkspace/Vivado/hdl/projects/adrv9009/zcu102
+4. source ./system_project.tcl
+
+## 如何讓 windows git bash 可以執行 make?
+1. 前往 ezwinports (SourceForge) 下載 make-4.3-without-guile-w32-bin.zip（版本號可能隨時間更新, 選擇最新的 without-guile 版本即可）
+2. 將壓縮檔解開, 在 bin 資料夾中找到 make.exe
+3. 將 make.exe 複製並貼到你 Git 的安裝目錄底下的 C:\Program Files\Git\usr\bin\
+4. 重新開啟一個 Git Bash 視窗, 輸入 make -v. 如果成功顯示版本資訊, 代表 Git Bash 已經學會 make 指令了.
+5. Git Bash (MINGW64) 是一個非常輕量級的終端機, 它主要只提供 Git 相關的功能, 預設並沒有包含 flock 這個 Linux 核心工具, 有可能不能用.
