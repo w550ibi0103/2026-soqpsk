@@ -92,12 +92,14 @@
 5. ap_ready: IP 告訴外面「我準備好接收下一筆新任務了」.
 
 ## Cygwin 使用教學
-1. Cygwin 視角: /cygdrive/c/XilinxWorkspace/Vivado/hdl/...
-2. 永久寫入環境變數: echo "export PATH=\$PATH:/cygdrive/c/Xilinx/Vivado/2023.2/bin" >> ~/.bashrc
-3. 套用設定: source ~/.bashrc
-4. 切換至專案目錄: cd /cygdrive/c/XilinxWorkspace/Vivado/hdl/projects/adrv9009/zcu102
-5. 清理殘留檔案: git clean -xdf
-6. 開始編譯: make
+1. 因為 Windows 的系統架構（NT 核心）跟 Linux 完全不同, Linux 的程式無法直接在 Windows 上跑. Cygwin 的做法是: 提供一個巨大的轉換層（DLL 檔）, 當 Linux 工具（像是 flock）發出指令時, Cygwin 會即時把它「翻譯」成 Windows 聽得懂的指令.
+2. Cygwin 會把 Windows 的所有磁碟機, 統一掛載在 /cygdrive/ 這個根目錄底下, Cygwin 視角: /cygdrive/c/XilinxWorkspace/Vivado/hdl/...
+3. Bash 指令（複製至 Cygwin 終端機）
+  - 永久寫入環境變數: echo "export PATH=\$PATH:/cygdrive/c/Xilinx/Vivado/2023.2/bin" >> ~/.bashrc
+  - 套用設定: source ~/.bashrc
+  - 切換至專案目錄: cd /cygdrive/c/XilinxWorkspace/Vivado/hdl/projects/adrv9009/zcu102
+  - 清理殘留檔案: git clean -xdf
+  - 開始編譯: make
 
 # 問題與解法
 ## 編譯器在跑模擬 (CSIM) 時, 找不到你的標頭檔 top.h
@@ -120,3 +122,4 @@
 3. 將 make.exe 複製並貼到你 Git 的安裝目錄底下的 C:\Program Files\Git\usr\bin\
 4. 重新開啟一個 Git Bash 視窗, 輸入 make -v. 如果成功顯示版本資訊, 代表 Git Bash 已經學會 make 指令了.
 5. Git Bash (MINGW64) 是一個非常輕量級的終端機, 它主要只提供 Git 相關的功能, 預設並沒有包含 flock 這個 Linux 核心工具, 有可能不能用.
+6. 參考 Cygwin 使用教學
