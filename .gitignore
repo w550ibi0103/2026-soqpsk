@@ -40,6 +40,11 @@
 # debug information files
 *.dwo
 
+# OS & Editor generated files
+.DS_Store
+Thumbs.db
+.vscode/
+
 # for cache and temporary archive
 .apcc/
 .autopilot/
@@ -61,7 +66,34 @@ hls_prj/
 *.log
 *.jou
 .vitis_hls_log_all.xml
+logs/
+vitis_hls.log
 
 #  IP package
 *.zip
 /Debug/
+
+# Xilinx general temp file
+**/.Xil/
+
+# Vitis Unified IDE Workspace Files
+**/.theia/
+**/.peers.ini
+**/.repo.yaml
+**/*.lock
+**/.vitis/
+**/csim/
+**/syn/
+**/impl/
+**/package/
+**/compile_commands.json
+**/vitis_c++/
+**/tfm_modulator/
+
+# Vitis
+*.bc
+*.pb3
+*.protoinst
+*.cmdline
+*_summary
+hash-map.txt
