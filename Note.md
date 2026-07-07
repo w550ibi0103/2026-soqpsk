@@ -178,3 +178,63 @@ SD 卡內必須維持的檔案清單 (於 BOOT 根目錄):
   - 清理殘留檔案: git clean -xdf
   - 開始編譯: make
   - 中間會一直 FAILED, 重新輸入 make 可以繼續編譯
+
+# tfm_modulator 動態 SPS / Free-Running 改造(2026-07-07)
+
+## 改了什麼(src/top.h, src/top.cpp, tb/tb_top.cpp)
+1. `reset` 參數與 `s_axilite` 上的 reset 暫存器整個移除, 交給 HLS 預設的 `ap_rst_n` 硬體腳位處理, `if(reset){...}` 那段手動歸零邏輯也拿掉, 全部靠 static 變數的 C++ initializer 當作 reset 值.
+2. `#pragma HLS INTERFACE s_axilite port=return bundle=CTRL` 改成 `#pragma HLS INTERFACE ap_ctrl_none port=return`, 讓這顆 IP 變成真正的 free-running 資料流 IP, 不需要 PS 寫 `ap_start`.
+3. 新增 `ap_uint<2> sps_sel` 參數, 走一個小的 `s_axilite` bundle(`CTRL`), 用來動態選擇 SPS(16/8/4/2), 對應 `active_sps = SPS_MAX >> sps_sel`(sps_sel: 0→16, 1→8, 2→4, 3→2). 這個 register 不影響 free-running, 只是額外開一個小控制窗口.
+4. 原本的函式 body 包進 `BYTE_LOOP: while(1)`, 在 `#ifndef __SYNTHESIS__` 底下用一個計數器(`CSIM_MAX_ITERS`, 定義在 top.h, 目前是 8)在 C 模擬時跳出迴圈避免卡死; 合成後(`__SYNTHESIS__` 有定義)這段跳出邏輯整個消失, 變成真正的無窮迴圈.
+5. 新增 4 張各自 `ARRAY_PARTITION complete` 的係數表 `g_coeff_sps16/8/4/2`(都是 `G_LEN_MAX=128` 長度, 短的表由 C++ aggregate initializer 自動補零), MAC 迴圈用 `switch(sps_sel)` 在乘法器輸入端選當下要用的係數, 不是做 4 組平行乘法樹(csynth 結果證實 DSP 沒有變貴, 見下方).
+6. `bit_idx`/`s`(sample-in-symbol index)/相位增量(`PHASE_SCALE[sps_sel]`)/TLAST 判斷式全部從固定的 `SPS` 巨集改成 runtime 的 `active_sps`/`shift_amt`.
+7. `tb_top.cpp` 從「呼叫 tfm_modulator N 次, 每次處理 1 byte」改成「只呼叫 1 次, 內部自己用 BYTE_LOOP 跑完 NUM_BYTES(=8) 個 byte」, 拿掉顯式的 reset 呼叫. 新增 `TEST_SPS_SEL` 編譯期巨集(預設 0), 可以用 `-DTEST_SPS_SEL=1/2/3` 切換測試不同 SPS.
+
+## g(t) 係數怎麼來的
+- 公式與參數完全照 `C:\Users\eddiehppc\Documents\igps-rasp-receiver-iq-to-toa\iGPS-PlutoSDR\tests\soqpsk-tg\soqpsk-tg.py` 的 Block 4(`rho=0.70, B=1.25, T1=1.5, T2=0.5, Tb=1.0, L=8`), 只是把 `sps` 代入 16/8/4/2 各自重新取樣、各自獨立正規化(`sum(g)*(Tb/sps)=0.5`), 不是用抽取(decimation)去猜.
+- 這台機器沒裝 Python(`python`/`python3` 只是 Windows Store 的殼, 也沒有 g++/node), 改用 `scripts/gen_g_coeffs.ps1`(PowerShell + .NET Math)重現同一套公式產生 `src/g_coeffs_sps{16,8,4,2}.inc`. 驗證過重新產生的 sps=16 版本跟原本的 `g_coeffs.inc`(已刪除, 被 `g_coeffs_sps16.inc` 取代)在 ~1e-14 相對誤差內一致(numpy vs .NET 函式庫的正常捨入差異, 遠低於 `ap_fixed<16,4>` 的解析度 0.000244).
+- 之後如果要加新的 SPS 或改參數, 直接重跑 `scripts/gen_g_coeffs.ps1` 就好.
+
+## 驗證結果
+- `csim_design`(sps_sel=0, 對照原本固定 SPS=16 的行為): TEST PASSED, 0 errors, 產生 1024 samples(= 8 bytes × 16 sps × 8 bits).
+- 4 種 `sps_sel`(0/1/2/3, 用 `-DTEST_SPS_SEL=N` 各自跑一次全新的 csim, 確保 static 狀態是乾淨重跑, 等同硬體上電後的 `ap_rst_n`)全部 TEST PASSED, 0 errors, 樣本數分別是 1024/512/256/128(= active_sps × 8 × 8 bytes), 跟預期公式完全吻合.
+- `csynth_design`(target xczu9eg-ffvb1156-2-e, `create_clock -period 10` 即 100MHz):
+  - Timing: estimated 7.256ns(≈137.8MHz), 有裕度過關. 這個 Fmax 比 ADRV9009 這份參考設計實際的 DAC 原生取樣率 122.88MHz(見下方)還高, 代表之後把 `ap_clk` 換成 122.88MHz 應該跑得動, 但正式對接時仍要重跑 `create_clock` 對應正確週期確認.
+  - Utilization: BRAM_18K 0, DSP 110(4%), FF 44884(8%), LUT 16463(6%), 對 zu9eg 來說非常寬鬆.
+  - 原本擔心「4 張係數表會讓乘法器變 4 倍貴」沒有發生: `sps_sel` 的 4-to-1 mux(報告裡的 `sparsemux` instance)接在乘法器輸入端, 先選係數再進同一顆乘法器, DSP 用量沒有明顯比純常數係數版本高, 多的成本主要是 LUT 端約 1210 顆的 mux 邏輯.
+  - `BYTE_LOOP` trip count 顯示 `inf`, 確認合成後真的是無窮迴圈(free-running), 每個 byte 的迭代延遲落在 123~235 cycle(對應 SPS=2 到 SPS=16 兩個極端).
+
+## 使用限制
+- 切換 `sps_sel` 不保證 glitch-free(shift_reg/current_phase 不會自動對齊新的取樣率), 只能在 `ap_rst_n` assert 期間切換.
+- `sps_sel` 從 reset 釋放後預設值是 0(對應 SPS=16), 跟原本固定 SPS=16 的行為一致.
+
+# ADRV9009 ADI HDL 整合建議(2026-07-07, 尚未實作, 屬於另一個 Vivado 專案)
+
+以下內容是研讀 `C:\XilinxWorkspace\Vivado\hdl\projects\adrv9009\zcu102\system_bd.tcl` 與 `C:\XilinxWorkspace\Vivado\hdl\projects\adrv9009\common\adrv9009_bd.tcl` 後得到的確認結果與建議方案, 目前只是設計討論, 沒有實際修改 Vivado 專案.
+
+## 確認過的事實(從原始碼直接找到, 不是憑記憶)
+1. **DAC 原生 IQ rate 是 122.88 MSPS, 不是 245.76 MSPS**: `adrv9009_bd.tcl:91` 寫死 `ad_add_interpolation_filter "tx_fir_interpolator" 8 $TX_NUM_OF_CONVERTERS 2 {122.88} {15.36} ...`, 8x 內插, 15.36→122.88 MSPS.
+2. **`CONFIG.CYCLIC 1` 的確切位置**: `adrv9009_bd.tcl:100-103`(`axi_adrv9009_tx_dma` instance), 跟 README 原本寫的「line 100-112」對得上, 只是實際在 `adrv9009_bd.tcl` 不是 `system_bd.tcl`(`system_bd.tcl` 只覆寫 `DMA_DATA_WIDTH_SRC`/`FIFO_SIZE` 兩個參數).
+3. **TX 資料路徑**(都掛在同一個 `axi_adrv9009_tx_clkgen/clk_0` 時脈域上):
+   ```
+   axi_adrv9009_tx_dma (CYCLIC=1)
+     → axi_adrv9009_dacfifo                     (CDC: dma_clk → clk_0)
+     → util_adrv9009_tx_upack                   (clk = clk_0)
+     → tx_fir_interpolator (8x, 15.36→122.88)   (aclk = clk_0)
+     → tx_adrv9009_tpl_core (dac_data_0..3)     (link_clk = clk_0)
+     → JESD204 TX → GT → ADRV9009
+   ```
+4. **這個已建置的專案目前是雙 TX 通道**: `system_project.tcl` 預設 `TX_JESD_M=4, TX_JESD_L=4`(vivado.log 裡的 `custom_string: ... TX:M=4 L=4 S=1 ...` 證實實際 build 就是用這組預設值), 也就是 TX1+TX2 都啟用, `dac_data_0/1`=TX1 的 I/Q, `dac_data_2/3`=TX2 的 I/Q.
+   - 曾經討論過改成單通道(`TX_JESD_M=2, TX_JESD_L=2` 重新 make), 但這需要整個 Vivado 專案重新 build(1~3 小時以上, 且 FPGA 端 JESD204 M/L 必須跟 ADRV9009 晶片本身在 TES 燒的 profile 一致, 否則 JESD204 link 直接連不起來), 風險與耗時都偏高, **最後決定不做, 維持雙通道**.
+
+## 插入點方案(TX1 換成 SOQPSK IP, TX2 完全不動)
+- **TX2(`dac_data_2/3`)維持原樣**, 繼續走現有的 `axi_adrv9009_tx_dma → dacfifo → upack → interpolator → tpl_core` 路徑, 用軟體算好的 IQ 波形播放.
+- **TX1(`dac_data_0/1`)由 `tfm_modulator` 接管**:
+  1. 新增一個獨立的 `axi_dmac` instance(不是修改現有的 `axi_adrv9009_tx_dma`), 設 `CONFIG.CYCLIC 0`(這才是「host 送即時不重複 bitstream」該有的行為), `ASYNC_CLK_*` 比照現有 `axi_adrv9009_tx_dma` 設 1, 讓它的 `m_axis` 輸出直接同步進 `axi_adrv9009_tx_clkgen/clk_0` 時脈域, 不用額外接一顆 CDC FIFO.
+  2. 這顆新 DMA 的 AXI-Stream 輸出接到 `tfm_modulator` 的 `bit_in`.
+  3. `tfm_modulator` 的 `ap_clk`/`ap_rst_n` 接到 `axi_adrv9009_tx_clkgen/clk_0` 同一個時脈域(跟 `tx_adrv9009_tpl_core/link_clk` 一致), `i_out`/`q_out` 直接接 `tx_adrv9009_tpl_core/dac_data_0`(I)、`dac_data_1`(Q), 取代原本從 `tx_fir_interpolator/data_out_0/1` 接過來的線.
+  4. `util_adrv9009_tx_upack`/`tx_fir_interpolator` 維持 `NUM_OF_CHANNELS=4`(`TX_NUM_OF_CONVERTERS` 全域參數)不動, 因為牽動 TX2 和 DMA 資料寬度; channel 0/1 那兩條 fifo/interpolator 分支就晾在旁邊不接東西, 換取不用動全域 M 參數的低風險.
+
+## 待確認事項
+- `axi_adrv9009_tx_clkgen`(`CLKIN_PERIOD=4`, `VCO_MUL=4`, `VCO_DIV=1`, `CLK0_DIV=4`)算出來的 `clk_0` 頻率跟 `TX_SAMPLES_PER_CHANNEL`(由 `adi_jesd204_calc_tpl_width` 決定, 跟 M=4/L=4/S=1/NP=16 有關)之間, 每個 `dac_data_x` port 每個 clock cycle 實際packing 幾個 sample, 需要再對照 Vivado 產生的時脈報告確認, 這會影響 `tfm_modulator` 的 `ap_clk` 到底要接多快、以及 SPS 動態切換要對齊的目標 sps.
+- ADRV9009 的 profile(TES 燒錄那邊)是否真的是 122.88 MSPS, 需要使用者用 TES 或現有的 profile 檔再次確認, 這份筆記只確認了 FPGA 端 HDL 原始碼寫的數字.

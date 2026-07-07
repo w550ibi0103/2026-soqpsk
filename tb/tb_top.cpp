@@ -57,42 +57,39 @@ int main() {
 	}
 
 	// --------------------------------------------------------
-	// 3. Reset the IP
+	// 3. Run the IP
 	// --------------------------------------------------------
-	// Call the IP once with reset=true to initialize static variables
-	tfm_modulator(bit_in, true, i_out, q_out
+	// tfm_modulator is now ap_ctrl_none / free-running: it is called ONCE and its
+	// internal BYTE_LOOP keeps consuming bytes until CSIM_MAX_ITERS is reached
+	// (that constant only exists in C simulation; in hardware the loop is infinite).
+	// No explicit reset call is needed: the static state's C++ initializers already
+	// give the correct power-on values, matching what ap_rst_n would do in hardware.
+	// TEST_SPS_SEL can be overridden at compile time (-DTEST_SPS_SEL=N) to csim the
+	// other sps_sel branches; defaults to 0 (SPS=16) which matches the g(t) test data.
+	#ifndef TEST_SPS_SEL
+	#define TEST_SPS_SEL 0
+	#endif
+	const ap_uint<2> sps_sel = TEST_SPS_SEL;
+	const int SPS_TABLE[4] = {16, 8, 4, 2};
+	const int SPS = SPS_TABLE[TEST_SPS_SEL];  // used only to size the debug drain below
+
+	tfm_modulator(bit_in, sps_sel, i_out, q_out
 		#ifdef HW_DEBUG_MODE
 			, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq
 		#endif
 	);
 
-	// --------------------------------------------------------
-	// 4. Run the IP
-	// --------------------------------------------------------
-	// [OPTIMIZED] Each function call now processes 1 full byte (8 bits × 16 SPS = 128 samples).
-	// Previously: total_calls = NUM_BYTES * 8 (one call per bit)
-	// Now:        total_calls = NUM_BYTES     (one call per byte)
-	int total_calls = NUM_BYTES;
-
-	for (int i = 0; i < total_calls; i++) {
-		// Call the IP with reset=false
-		tfm_modulator(bit_in, false, i_out, q_out
-			#ifdef HW_DEBUG_MODE
-				, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq
-			#endif
-		);
-		#ifdef HW_DEBUG_MODE
-			// Each call now produces 128 debug samples (8 bits × 16 SPS)
-			for (int j = 0; j < SPS * 8; j++) {
-				data_t db_pulse = debug_pulse.read();
-				data_t db_phase = debug_phase.read();
-				data_t db_freq = debug_freq.read();
+	#ifdef HW_DEBUG_MODE
+		// The single call above produced NUM_BYTES * SPS * 8 debug samples in total.
+		for (int j = 0; j < NUM_BYTES * SPS * 8; j++) {
+			data_t db_pulse = debug_pulse.read();
+			data_t db_phase = debug_phase.read();
+			data_t db_freq = debug_freq.read();
 		}
-		#endif
-	}
+	#endif
 
 	// --------------------------------------------------------
-	// 5. Read outputs and save to CSV (for Python plotting)
+	// 4. Read outputs and save to CSV (for Python plotting)
 	// --------------------------------------------------------
 	std::ofstream outfile("output_waveform.csv");
 	outfile << "Sample,I_Data,Q_Data,TLAST" << std::endl;
@@ -126,7 +123,7 @@ int main() {
 	outfile.close();
 
 	// --------------------------------------------------------
-	// 6. Print Simulation Result
+	// 5. Print Simulation Result
 	// --------------------------------------------------------
 	std::cout << ">> Simulation completed. Generated " << sample_idx << " samples." << std::endl;
 	std::cout << ">> Results saved to 'output_waveform.csv'." << std::endl;
