@@ -26,8 +26,10 @@ typedef ap_fixed<16, 4> data_t;
 #define G_LEN_MAX (L * SPS_MAX)  // Max length of w(t)/g(t)/shift register (128 taps)
 
 // Dynamic SPS selection (see README item 9/11): sps_sel picks which precomputed
-// g_coeffs table and upsampling factor is active, active_sps = SPS_MAX >> sps_sel.
-//   sps_sel = 0 -> SPS=16, 1 -> SPS=8, 2 -> SPS=4, 3 -> SPS=2
+// g_coeffs table and upsampling factor is active.
+//   sps_sel = 0 -> SPS=16, 1 -> SPS=8, 2 -> SPS=4
+//   sps_sel = 3 is reserved (SPS=2 was removed 2026-07-09: not enough oversampling
+//   margin for symbol timing recovery) and falls back to SPS=16, same as sps_sel=0.
 // Only change sps_sel while ap_rst_n is asserted; switching mid-stream is not
 // glitch-free (shift_reg/current_phase are not re-aligned to the new rate).
 

@@ -66,11 +66,15 @@ int main() {
 	// give the correct power-on values, matching what ap_rst_n would do in hardware.
 	// TEST_SPS_SEL can be overridden at compile time (-DTEST_SPS_SEL=N) to csim the
 	// other sps_sel branches; defaults to 0 (SPS=16) which matches the g(t) test data.
+	// Only 0/1/2 are valid (SPS=2, sps_sel==3, was removed 2026-07-09).
 	#ifndef TEST_SPS_SEL
 	#define TEST_SPS_SEL 0
 	#endif
+	#if TEST_SPS_SEL > 2
+	#error "TEST_SPS_SEL must be 0, 1, or 2 (SPS=2 / sps_sel==3 was removed)"
+	#endif
 	const ap_uint<2> sps_sel = TEST_SPS_SEL;
-	const int SPS_TABLE[4] = {16, 8, 4, 2};
+	const int SPS_TABLE[3] = {16, 8, 4};
 	const int SPS = SPS_TABLE[TEST_SPS_SEL];  // used only to size the debug drain below
 
 	tfm_modulator(bit_in, sps_sel, i_out, q_out

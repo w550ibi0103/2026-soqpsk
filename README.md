@@ -208,6 +208,34 @@ SD 卡內必須維持的檔案清單 (於 BOOT 根目錄):
 - 切換 `sps_sel` 不保證 glitch-free(shift_reg/current_phase 不會自動對齊新的取樣率), 只能在 `ap_rst_n` assert 期間切換.
 - `sps_sel` 從 reset 釋放後預設值是 0(對應 SPS=16), 跟原本固定 SPS=16 的行為一致.
 
+# tfm_modulator 迴圈攤平 + 刪除 SPS=2(2026-07-09)
+
+## 動機:BYTE_LOOP 沒有真的每個 clk 都輸出 IQ
+規劃「bypass `tx_fir_interpolator`、直接接 `tx_adrv9009_tpl_core`」這個插入點方案時發現, 上面 2026-07-07 那版雖然 `MAIN_LOOP` 本身 `achieved II=1`, 但外層 `BYTE_LOOP` 沒有被攤平/pipeline: `tfm_modulator_csynth.rpt` 的 Instance 表顯示 `grp_tfm_modulator_Pipeline_MAIN_LOOP_fu_696` 的 `Interval == Latency`(min=119/max=231), 代表下一個 byte 的 `MAIN_LOOP` 必須等上一個 byte 的 pipeline 完全 drain 才能開始, byte 與 byte 交界處有一大段空窗. 換算吞吐效率(輸出樣本數/實際耗費 cycle 數): SPS=16 約 55%, SPS=2 只有約 13%. `dac_data` 這個介面是無 handshake 的固定速率 port, 這樣的空窗會讓 DAC 拿到 stale 資料, 所以這不是「效能優化」而是這個插入點方案能不能成立的先決條件.
+
+根本原因是 `MAIN_LOOP` 的邊界 `active_sps*8` 是 runtime 變數(取決於 `sps_sel`), Vitis HLS 的自動 `LOOP_FLATTEN` 只支援邊界是編譯期常數的完美巢狀迴圈, 用不上, 只能手動合併.
+
+## 改了什麼(src/top.cpp)
+1. 拿掉 `MAIN_LOOP` 這層 `for`, 把 `BYTE_LOOP`/`MAIN_LOOP` 合併成一層 `while(1)` + `#pragma HLS PIPELINE II=1`. 用一個 static counter `iter_in_byte`(0 .. active_sps*8-1)取代原本內層 for 迴圈的隱含計數器, 在 `iter_in_byte==0` 時做「原本 BYTE_LOOP 開頭」那段(解碼 `shift_amt`/`active_sps`/`phase_idx`、`bit_in.read_nb` 讀新 byte), 每個 cycle 結尾判斷 `iter_in_byte` 是否到 `active_sps*8-1` 決定要繞回 0(進入下一個 byte)還是 +1.
+2. `alpha`/`current_bit`/`current_byte`/`is_burst_end`/`idle_mode` 全部從一般區域變數改成 `static`——原本它們能在同一個 byte 的 `active_sps` 次迭代間存活, 是靠外層 for 迴圈的 C++ block scope 圍住, 攤平成一層之後沒有這個 scope 了, 必須手動 `static` 才能存活, 這是這次修改最容易出錯的地方.
+3. `#ifndef __SYNTHESIS__` 底下的 C 模擬中斷邏輯(`csim_iter_count`)從「每次外層迴圈(=每個 byte)加 1」改成「只在 `iter_in_byte` 即將繞回 0 的那個 cycle才加 1、判斷要不要 break」, 確保還是處理完整數個 byte 才跳出, 不會在 byte 中途被切斷.
+4. `PHASE_SCALE[sps_sel]` 改成 `PHASE_SCALE[phase_idx]`, `phase_idx` 跟 `shift_amt` 一樣只在 byte 邊界解碼, 且對 `sps_sel==3`(已刪除的 SPS=2)clamp 回 0(等同 SPS=16), 避免陣列縮小後越界.
+
+## 刪除 SPS=2(src/top.h, src/top.cpp, tb/tb_top.cpp, scripts/gen_g_coeffs.ps1)
+- 理由: (1) SPS=2 剛好卡在 Nyquist 邊界, 接收端做符元定時回復(timing recovery)幾乎沒有內插 margin, 實務上通常至少要 SPS=4. (2) 在攤平前的架構下, SPS=2 的吞吐效率是四個選項裡最差的(~13%).
+- `g_coeff_sps2` 表、`src/g_coeffs_sps2.inc` 檔案、兩個 `switch(sps_sel)`(`shift_amt` 解碼、MAC 係數選擇)裡的 `case 3` 分支、`PHASE_SCALE` 的第 4 個元素全部刪除. `sps_sel==3` 現在是保留值, 兩個 switch 的 `default` 分支自動把它當 SPS=16 處理(跟 `sps_sel==0` 完全一樣), `phase_idx` 同樣 clamp 回 0.
+- `scripts/gen_g_coeffs.ps1` 的 `$SpsList` 預設值從 `@(16,8,4,2)` 改成 `@(16,8,4)`.
+- `tb/tb_top.cpp`:`SPS_TABLE` 從 4 個元素縮成 3 個(`{16,8,4}`), 新增 `#if TEST_SPS_SEL > 2 #error ... #endif` 編譯期防呆.
+
+## 驗證結果
+- `csim_design`:3 種 `sps_sel`(0/1/2, 用 `-DTEST_SPS_SEL=N` 各自跑一次全新的 csim)全部 TEST PASSED, 0 errors, 樣本數分別是 1024/512/256(= active_sps × 8 × 8 bytes), 跟改動前完全一致.
+- `-DTEST_SPS_SEL=3` 會在編譯期直接被 `#error` 擋下, 確認防呆生效.
+- `csynth_design`(同樣 target xczu9eg-ffvb1156-2-e, `create_clock -period 10`):
+  - Timing 不變: estimated 7.256ns(≈137.8MHz), 跟攤平前完全一樣, 代表新增的 `iter_in_byte` 控制邏輯沒有拉長關鍵路徑.
+  - **關鍵指標**:報告裡只剩一個迴圈 `BYTE_LOOP`(`tfm_modulator_Pipeline_BYTE_LOOP_csynth.rpt`), `Trip Count = inf`、`Pipelined: yes`、`achieved II = 1`——不再有攤平前那種「`Interval == Latency`, 序列化呼叫」的現象. 也就是說現在不管 `active_sps` 是多少, 穩態下每個 clk 都會有一組新的 IQ 輸出, 不再受 SPS 大小影響效率.
+  - Utilization 略降(移除 SPS=2 表 + 減少迴圈控制邏輯的重複開銷):BRAM_18K 0, DSP 109, FF 37206, LUT 13727(攤平前為 DSP 110, FF 44884, LUT 16463).
+- 驗證用的暫存專案(`hls_prj_verify`)僅用於這次確認, 已刪除, 不影響 repo 追蹤的 `hls_prj/`(git-ignored).
+
 # ADRV9009 ADI HDL 整合建議(2026-07-07, 尚未實作, 屬於另一個 Vivado 專案)
 
 以下內容是研讀 `C:\XilinxWorkspace\Vivado\hdl\projects\adrv9009\zcu102\system_bd.tcl` 與 `C:\XilinxWorkspace\Vivado\hdl\projects\adrv9009\common\adrv9009_bd.tcl` 後得到的確認結果與建議方案, 目前只是設計討論, 沒有實際修改 Vivado 專案.
@@ -235,6 +263,21 @@ SD 卡內必須維持的檔案清單 (於 BOOT 根目錄):
   3. `tfm_modulator` 的 `ap_clk`/`ap_rst_n` 接到 `axi_adrv9009_tx_clkgen/clk_0` 同一個時脈域(跟 `tx_adrv9009_tpl_core/link_clk` 一致), `i_out`/`q_out` 直接接 `tx_adrv9009_tpl_core/dac_data_0`(I)、`dac_data_1`(Q), 取代原本從 `tx_fir_interpolator/data_out_0/1` 接過來的線.
   4. `util_adrv9009_tx_upack`/`tx_fir_interpolator` 維持 `NUM_OF_CHANNELS=4`(`TX_NUM_OF_CONVERTERS` 全域參數)不動, 因為牽動 TX2 和 DMA 資料寬度; channel 0/1 那兩條 fifo/interpolator 分支就晾在旁邊不接東西, 換取不用動全域 M 參數的低風險.
 
+## 已排除的替代方案:插入 tx_fir_interpolator 前端(2026-07-09)
+- 曾經討論過不 bypass `tx_fir_interpolator`, 改成讓 `tfm_modulator` 只輸出 15.36 MSPS、接到 `tx_fir_interpolator/data_in_0/1`(這樣它的 x8 內插直接幫忙做到 122.88 MSPS), 好處是我們 IP 只需要撐住 15.36 MSPS(比 122.88 MSPS 寬鬆很多), 也確認過 `adi_fir_filter_bd.tcl:132-145` 這個插入點的輸入側本來就是「每 8 個 clk 才取一次新資料」的設計(`rate_gen`/`PULSE_PERIOD=filter_rate-1`).
+- 最後沒有採用, 因為客戶要求的最快 bit rate 是 20 Msym/s, 這個數字跟 ADRV9009 這整條時脈家族(15.36 MHz × 2ⁿ)對不上(`80,000,000 / 15,360,000 = 125/24`, 不是整數比、更不是 2 的冪次比), 硬接會需要一顆 L=96/M=125 等級的有理數重取樣器, 不划算. 改成直接對齊 122.88 MSPS(bypass `tx_fir_interpolator`)之後, 只要 bit rate 跟 SPS 的乘積等於 122.88 MHz 家族的數字就好(例如 15.36 Mbit/s × SPS8, 或 7.68 Mbit/s × SPS16), 不需要任何額外的重取樣級.
+- 這個決定也代表上面「迴圈攤平」那個修改(2026-07-09)是這個插入點方案能不能成立的先決條件: `dac_data` 是無 handshake 的固定速率 port, 沒有攤平之前 `BYTE_LOOP` 撐不住 122.88 MSPS 的連續輸出(見上面章節的效率試算), 攤平後 `achieved II=1` 才讓這個方案有可行性.
+
+## `dac_data_0/1` 打包格式(已確認, 2026-07-09)
+查了 `tx_adrv9009_tpl_core` 底層的 `ad_ip_jesd204_tpl_dac_channel.v:118-122`:
+```verilog
+/* Data is expected to be LSB aligned, drop unused MSBs */
+for (i = 0; i < DATA_PATH_WIDTH; i = i + 1) begin: g_dac_dma_data
+  assign dac_dma_data_s[CR*i+:CR] = dma_data[BITS_PER_SAMPLE*i+:CR];
+end
+```
+`DATA_PATH_WIDTH=2`、`CR`(CONVERTER_RESOLUTION)`=16`. 確認 `dac_data_0`(I)的 32-bit 裡`[15:0]`/`[31:16]`是**同一個 channel、時間軸上連續兩筆** I sample(`dac_data_1`同理放 Q), 不是同一個 32-bit 裡塞 I/Q 交錯. 這個 packing 規則是 `tx_adrv9009_tpl_core` 通用的, 不管上游接 `tx_fir_interpolator` 還是 `tfm_modulator` 都要照這個順序打包.
+
 ## 待確認事項
-- `axi_adrv9009_tx_clkgen`(`CLKIN_PERIOD=4`, `VCO_MUL=4`, `VCO_DIV=1`, `CLK0_DIV=4`)算出來的 `clk_0` 頻率跟 `TX_SAMPLES_PER_CHANNEL`(由 `adi_jesd204_calc_tpl_width` 決定, 跟 M=4/L=4/S=1/NP=16 有關)之間, 每個 `dac_data_x` port 每個 clock cycle 實際packing 幾個 sample, 需要再對照 Vivado 產生的時脈報告確認, 這會影響 `tfm_modulator` 的 `ap_clk` 到底要接多快、以及 SPS 動態切換要對齊的目標 sps.
+- `axi_adrv9009_tx_clkgen`(`CLKIN_PERIOD=4`, `VCO_MUL=4`, `VCO_DIV=1`, `CLK0_DIV=4`)算出來的 `clk_0` 實際頻率還沒確認——如果 `clk_0=122.88MHz`(一個 clock 只對應 1 組 IQ), `tfm_modulator` 的 `ap_clk` 直接接 `clk_0`, 每 2 個 clock 的輸出由外部一個小暫存器/serializer 打包成一次 32-bit 寫入 `dac_data_x`; 如果 `clk_0=61.44MHz`(`DATA_PATH_WIDTH=2` 代表一個 clock 要同時生出 2 組 IQ), 那 `tfm_modulator` 要嘛用 2 倍頻的 `ap_clk`(122.88MHz)搭配外部 2:1 打包, 要嘛改成每個 clock 內部平行算 2 組樣本——這兩種情況對 `tfm_modulator` 的介面設計影響很大, 需要對照 Vivado 產生的時脈報告確認後才能定案.
 - ADRV9009 的 profile(TES 燒錄那邊)是否真的是 122.88 MSPS, 需要使用者用 TES 或現有的 profile 檔再次確認, 這份筆記只確認了 FPGA 端 HDL 原始碼寫的數字.

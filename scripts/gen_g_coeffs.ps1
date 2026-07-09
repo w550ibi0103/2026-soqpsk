@@ -1,13 +1,17 @@
-# Regenerates src/g_coeffs_sps{16,8,4,2}.inc for the dynamic-SPS tfm_modulator IP.
+# Regenerates src/g_coeffs_sps{16,8,4}.inc for the dynamic-SPS tfm_modulator IP.
 #
 # Mirrors Block 4 (Frequency Pulse g(t) Generation) of the reference model at
 # C:\Users\eddiehppc\Documents\igps-rasp-receiver-iq-to-toa\iGPS-PlutoSDR\tests\soqpsk-tg\soqpsk-tg.py
 # using the same rho/B/T1/T2/Tb/L parameters (Table 2-4), just re-evaluated at a
 # different sps. Written in PowerShell/.NET because this machine has no Python.
 #
+# SPS=2 was dropped from the supported set (2026-07-09): not enough oversampling
+# margin for the receiver's symbol timing recovery, and it was also the worst
+# case for free-running throughput efficiency before the loop-flatten fix.
+#
 # Usage: powershell -File scripts\gen_g_coeffs.ps1
 param(
-    [int[]]$SpsList = @(16, 8, 4, 2),
+    [int[]]$SpsList = @(16, 8, 4),
     [string]$OutDir = "$PSScriptRoot\..\src"
 )
 
