@@ -34,9 +34,14 @@ if {[file exists "./hls_prj/solution1/directives.tcl"]} {
 csim_design
 
 # Run C Synthesis (Transform C++ to RTL/Verilog)
-#csynth_design
+csynth_design
 
 # Run C/RTL Co-simulation (Verify RTL behavior against C testbench)
+# NOTE: cosim_design is intentionally left disabled here. This IP is ap_ctrl_none
+# (free-running) AND exposes sps_sel as a runtime s_axilite register; Vitis HLS 2023.2's
+# cosim engine rejects that combination ("non-self-synchronizing top I/O sps_sel") because
+# there is no ap_start to anchor an AXI4-Lite register write against. Confirmed via a
+# throwaway verify_tmp/ build with sps_sel pinned to a compile-time constant (2026-07-15).
 #cosim_design
 
 # Export the design as a Vivado IP Catalog package (.zip)
