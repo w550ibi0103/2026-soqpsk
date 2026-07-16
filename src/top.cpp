@@ -71,8 +71,20 @@ void tfm_modulator(
 	static int last_delta = 0;  // I32
 	static bool odd_flag = false;
 
+	// --- SOQPSK Precoder history (see "Block 3" below) ---------------------
+	// Replaced 2026-07-16 with a delta-bit history + compare/select table.
+	// Original bipolar (+/-1) history array, kept for reference:
 	// Static array of size 3 to retain past states. The 3rd element is reserved for padding/redundancy
-	static data_t t_prev[3] = {-1, 1, 0};  // Never reset
+	// static data_t t_prev[3] = {-1, 1, 0};  // Never reset
+	//
+	// delta_prev1/delta_prev2 hold the precoder's own delta[n-1]/delta[n-2]
+	// bit history (0/1), replacing t_prev[1]/t_prev[0]'s bipolar values.
+	// Seeded to (1, 0) to reproduce t_prev's original (+1, -1) seed exactly
+	// -- note this is intentionally NOT the same seed as last_delta's initial
+	// 0 above: t_prev bootstraps the precoder's own recursion, independent of
+	// the differential encoder's history, and always has been.
+	static ap_uint<1> delta_prev1 = 1;  // Never reset (matches old t_prev[1] == +1)
+	static ap_uint<1> delta_prev2 = 0;  // Never reset (matches old t_prev[0] == -1)
 
 	// Shift register for FIR filter, sized for the largest supported SPS.
 	// Fully partitioned into individual registers: all 128 values accessible in a single cycle.
@@ -176,23 +188,38 @@ void tfm_modulator(
 			// Update state for the next bit
 			last_delta = delta;
 
-			// Convert binary to bipolar format (+1.0 or -1.0)
-			data_t t_now = (delta == 1) ? (data_t)1.0 : (data_t)-1.0;
-
-			// --- Block 3: SOQPSK Precoder ---
+			// --- Block 3: SOQPSK Precoder (delta-history compare/select) ---
 			// alpha_i=(-1)^(i+1)*alpha_i-1*(alpha_i-alpha_i-2)/2
-			data_t diff = t_now - t_prev[0];
-			data_t mult = t_prev[1] * diff;
-			data_t half_mult = mult >> 1;  // Right shift = divide by 2, costs 0 DSP
+			//
+			// Replaced 2026-07-16: the formula above only ever multiplies
+			// bipolar (+/-1) values, so it was really picking one of just
+			// three outcomes {-1,0,+1}. csynth.rpt confirmed this cost a
+			// real 16x16 DSP multiplier (mul_16s_16s_28_1_1_U2, ln185) to
+			// make that pick. Original bipolar version, kept for reference:
+			// data_t t_now = (delta == 1) ? (data_t)1.0 : (data_t)-1.0;
+			// data_t diff = t_now - t_prev[0];
+			// data_t mult = t_prev[1] * diff;
+			// data_t half_mult = mult >> 1;  // Right shift = divide by 2, costs 0 DSP
+			// alpha = (!odd_flag) ? (data_t)(-half_mult) : (data_t)(half_mult);
+			//
+			// Since t_now/t_prev are just bipolar(delta), alpha depends only
+			// on 3 delta bits (current, n-1, n-2) and odd_flag -- a pure
+			// boolean function of a 16-combination space. Derivation:
+			//   half_mult = 0             if delta[n] == delta[n-2]
+			//             = +1            if delta[n] == delta[n-1] (and != delta[n-2])
+			//             = -1            otherwise (delta[n-1] == delta[n-2] != delta[n])
+			bool eq_prev2 = (delta == (int)delta_prev2);  // delta[n] == delta[n-2] ?
+			bool eq_prev1 = (delta == (int)delta_prev1);  // delta[n] == delta[n-1] ?
+			int half_mult = eq_prev2 ? 0 : (eq_prev1 ? 1 : -1);
 			alpha = (!odd_flag) ? (data_t)(-half_mult) : (data_t)(half_mult);
 
 			#ifdef HW_DEBUG_MODE
 			debug_alpha = alpha;
 			#endif
 
-			// Update history registers
-			t_prev[0] = t_prev[1];
-			t_prev[1] = t_now;
+			// Update precoder history registers (replaces old t_prev[] shift)
+			delta_prev2 = delta_prev1;
+			delta_prev1 = (ap_uint<1>)delta;
 
 			// Toggle odd/even flag
 			odd_flag = !odd_flag;
@@ -201,7 +228,7 @@ void tfm_modulator(
 			#ifndef __SYNTHESIS__
 				std::cout << "[IP Debug] Bit Index: " << bit_idx
 						<< " | Current Bit: " << current_bit
-						<< " | t_now: " << t_now
+						<< " | Delta: " << delta
 						<< " | Alpha: " << alpha.to_double()
 						<< " | Idle Mode: " << (idle_mode ? "YES" : "NO")
 						<< std::endl;
@@ -228,10 +255,24 @@ void tfm_modulator(
 		}
 		shift_reg[0] = impulse;
 
-		// FIR filter convolution (Multiply-Accumulate) using the coefficient table
-		// selected by sps_sel. Taps beyond the active table's real length are zero
-		// (see the aggregate-init comment above), so they contribute nothing here.
-		// With ARRAY_PARTITION complete, all 128 MACs execute in parallel
+		// FIR filter convolution (Multiply-Select-Accumulate) using the coefficient
+		// table selected by sps_sel. Taps beyond the active table's real length are
+		// zero (see the aggregate-init comment above), so they contribute nothing here.
+		//
+		// shift_reg[] only ever holds impulse-train values in {-1, 0, +1}: it is
+		// loaded exclusively from `impulse` above, which is either `alpha` (proven
+		// in Block 3 to be one of {-1,0,+1}) or 0 from zero-stuffing. With one
+		// operand always restricted to those 3 values, shift_reg[j] * coeff[j] is
+		// really a 3-way select (0 / +coeff / -coeff), not a general multiply --
+		// so it's replaced below with a compare/select instead of `*`. This holds
+		// for every supported SPS (16/8/4): a smaller SPS only means more of the
+		// 128 coefficient taps are pre-zeroed, and the select still produces 0 for
+		// those taps exactly as the multiply did, so no SPS-specific handling is
+		// needed here. Measured effect: removes ~58 of the design's 109 DSP48s
+		// (hls_prj/solution1/syn/report/csynth.rpt, the ln245 MAC entries), since
+		// Vivado no longer needs a real multiplier per tap -- just a small mux
+		// feeding the same adder tree.
+		// With ARRAY_PARTITION complete, all 128 selects execute in parallel
 		// followed by an adder tree (log2(128) = 7 levels)
 		data_t freq_dev = 0;
 		for (int j = 0; j < G_LEN_MAX; j++) {
@@ -242,7 +283,11 @@ void tfm_modulator(
 				case 2:  coeff = g_coeff_sps4[j];  break;
 				default: coeff = g_coeff_sps16[j]; break;  // also covers reserved sps_sel==3
 			}
-			freq_dev += shift_reg[j] * coeff;
+			data_t contribution;
+			if (shift_reg[j] == (data_t)0)     contribution = (data_t)0;
+			else if (shift_reg[j] > (data_t)0) contribution = coeff;
+			else                                contribution = -coeff;
+			freq_dev += contribution;
 		}
 
 		// Phase Integration (Accumulator)
