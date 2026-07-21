@@ -278,6 +278,16 @@ end
 ```
 `DATA_PATH_WIDTH=2`、`CR`(CONVERTER_RESOLUTION)`=16`. 確認 `dac_data_0`(I)的 32-bit 裡`[15:0]`/`[31:16]`是**同一個 channel、時間軸上連續兩筆** I sample(`dac_data_1`同理放 Q), 不是同一個 32-bit 裡塞 I/Q 交錯. 這個 packing 規則是 `tx_adrv9009_tpl_core` 通用的, 不管上游接 `tx_fir_interpolator` 還是 `tfm_modulator` 都要照這個順序打包.
 
-## 待確認事項
-- `axi_adrv9009_tx_clkgen`(`CLKIN_PERIOD=4`, `VCO_MUL=4`, `VCO_DIV=1`, `CLK0_DIV=4`)算出來的 `clk_0` 實際頻率還沒確認——如果 `clk_0=122.88MHz`(一個 clock 只對應 1 組 IQ), `tfm_modulator` 的 `ap_clk` 直接接 `clk_0`, 每 2 個 clock 的輸出由外部一個小暫存器/serializer 打包成一次 32-bit 寫入 `dac_data_x`; 如果 `clk_0=61.44MHz`(`DATA_PATH_WIDTH=2` 代表一個 clock 要同時生出 2 組 IQ), 那 `tfm_modulator` 要嘛用 2 倍頻的 `ap_clk`(122.88MHz)搭配外部 2:1 打包, 要嘛改成每個 clock 內部平行算 2 組樣本——這兩種情況對 `tfm_modulator` 的介面設計影響很大, 需要對照 Vivado 產生的時脈報告確認後才能定案.
+## IP 現在還不會輸出 dac_data 要的打包格式(已確認, 2026-07-09)
+`src/top.h` 的 `sample_pkt` 是 `ap_axiu<16,...>`, `src/top.cpp` 的 `BYTE_LOOP` 每個 clock 只做 `i_out.write(out_i); q_out.write(out_q);`——**一次 1 筆 16-bit I、1 筆 16-bit Q**, 不是 32-bit、也沒有把「這一筆」跟「下一筆」打包在一起. 上面「`dac_data_0/1` 打包格式」那段講的 32-bit/2 筆連續樣本, 是 `tx_adrv9009_tpl_core` **要求的輸入格式**, 我們 IP 目前完全還沒做這個打包, 這是實際要接線前一定要補的一塊, 不是已經做好的東西.
+
+## tx_adrv9009_tpl_core 的資料輸入沒有 valid/ready(已確認, 2026-07-09)
+`ad_ip_jesd204_tpl_dac_channel.v:53-85` 完整 port list 裡, `dma_data`/`dac_iqcor_data_in` 這兩個資料輸入 port **完全沒有對應的 valid/ready pin**, 只有 `clk`. 代表這顆模組每個 clock 都會直接把 bus 上當下的值採進去, 沒有機制讓上游說「這筆還沒準備好」——每個 clk 都必須有有效資料餵進去, 這也是為什麼「迴圈攤平」(見上面章節)是這個插入點方案能不能成立的先決條件.
+
+## 待確認事項(2026-07-09 追加討論, 尚未定案, 明天接續)
+- **`clk_0` 實際頻率有矛盾, 需要用權威來源重新確認, 不能用我們雙方互相引用的推論**:
+  - 之前(2026-07-07)以為 `clk_0=122.88MHz` 的依據, 是 `ad_add_interpolation_filter` 呼叫時傳給 Xilinx FIR Compiler wizard 的 `Clock_Frequency=122.88` 這個 IP 設定參數, 但這個參數只是餵給 wizard 決定內部架構用的, 不保證等於實際接線的 clock 淨頻率.
+  - 重新拿 RTL 事實反推: DAC 最終速率(鐵的事實, 8x 內插 15.36→122.88 MSPS 得到)= 122.88 MSPS; `DATA_PATH_WIDTH=2`(鐵的事實, 直接讀 RTL 得到)= 每個 `clk` cycle bus 上就有 2 筆同一 channel 的樣本. 兩者相除:`122.88 MSPS / 2 = 61.44MHz`——這個算法反而指向 `clk_0` 應該是 **61.44MHz**, 跟之前的假設矛盾.
+  - **這個數字目前只是推論, 兩個版本都沒有被權威來源證實過**. 下一步要嘛跑一次完整 Vivado build 後看 `report_clocks`/timing summary 直接讀 `clk_0` net 的實際頻率, 要嘛找負責這份 Vivado 專案的人確認 `axi_adrv9009_tx_clkgen`(`CLKIN_PERIOD=4`, `VCO_MUL=4`, `VCO_DIV=1`, `CLK0_DIV=4`)那顆 MMCM 的輸入時脈來源到底是多少.
+  - 這個數字會直接決定 `tfm_modulator` 要不要改成「每個 clock 內部平行算 2 組樣本」, 還是維持現在「每個 clock 1 組樣本」再外掛一個簡單的 2:1 打包/serializer 就好, 兩條路的改動量差很多, 要等確認後才能定案.
 - ADRV9009 的 profile(TES 燒錄那邊)是否真的是 122.88 MSPS, 需要使用者用 TES 或現有的 profile 檔再次確認, 這份筆記只確認了 FPGA 端 HDL 原始碼寫的數字.
