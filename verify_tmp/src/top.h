@@ -4,10 +4,14 @@
 
 //  --- *********************************** Important *********************************** ---
 //  --- Only for debugging during C simulation, comment out this line if release IP ---
-// Disabled for this throwaway cosim-verification build: debug_current_bit/debug_alpha
-// are ap_none scalar ports, which trip the same "non-self-synchronizing top I/O" cosim
-// restriction as sps_sel below. Not present in the real hls_prj/ build.
-// #define HW_DEBUG_MODE
+// DIAGNOSTIC-ONLY, re-enabled temporarily: debug_current_bit/debug_alpha/
+// debug_pulse/debug_phase/debug_freq trip Vitis HLS cosim's ap_ctrl_none
+// restriction (same as sps_sel would), but that's not a problem here since
+// this build is only used for csim_design + a hand-rolled XSIM testbench,
+// never cosim_design. Needed to capture debug_phase for the divergence
+// investigation. Must revert to commented-out before using this project for
+// its normal cosim-verification purpose again.
+#define HW_DEBUG_MODE
 //  --- *********************************** Important *********************************** ---
 
 // COSIM-VERIFICATION-ONLY: sps_sel pinned to a synthesis-time constant (see
@@ -17,7 +21,7 @@
 // Vitis HLS 2023.2 because ap_ctrl_none (free-running) designs have no ap_start to
 // anchor an AXI4-Lite register write against. This constant only exists to let cosim
 // confirm the RTL pipeline matches the C model; it is not a change to the real IP.
-#define VERIFY_FIXED_SPS_SEL 0
+#define VERIFY_FIXED_SPS_SEL 1
 
 // Vitis HLS libraries for fixed-point arithmetic and math functions
 #include <ap_fixed.h>

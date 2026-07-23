@@ -84,12 +84,19 @@ int main() {
 	);
 
 	#ifdef HW_DEBUG_MODE
+		// DIAGNOSTIC-ONLY: dump per-sample debug_pulse/debug_phase/debug_freq to
+		// a CSV (golden reference for the RTL-vs-C divergence investigation),
+		// instead of silently draining them.
+		std::ofstream debugfile("debug_signals.csv");
+		debugfile << "Sample,Pulse,Phase,Freq" << std::endl;
 		// The single call above produced NUM_BYTES * SPS * 8 debug samples in total.
 		for (int j = 0; j < NUM_BYTES * SPS * 8; j++) {
 			data_t db_pulse = debug_pulse.read();
 			data_t db_phase = debug_phase.read();
 			data_t db_freq = debug_freq.read();
+			debugfile << j << "," << db_pulse.to_double() << "," << db_phase.to_double() << "," << db_freq.to_double() << std::endl;
 		}
+		debugfile.close();
 	#endif
 
 	// --------------------------------------------------------

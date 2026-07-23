@@ -22,7 +22,11 @@ set_top tfm_modulator
 # -flow_target: Set to 'vivado' for standalone RTL IP generation
 open_solution -reset "solution1" -flow_target vivado
 set_part {xczu9eg-ffvb1156-2-e}
-create_clock -period 10 -name default
+# 160 MSPS I/Q output rate required (customer spec: 20 Mbit/s bit_in @ SPS=8;
+# one I/Q pair is written every ap_clk cycle regardless of SPS, so ap_clk itself
+# must be >= 160MHz). Confirmed via a dedicated 6.25ns-target csynth run
+# (2026-07-23): estimated critical path 4.552ns, achieved II=1, Trip Count=inf.
+create_clock -period 6.25 -name default
 
 # 5. Implementation Flow
 # Source optimization directives if the file exists

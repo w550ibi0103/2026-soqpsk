@@ -67,6 +67,12 @@ hls_prj/
 *.jou
 .vitis_hls_log_all.xml
 logs/
+
+# xsim_verify/ build artifacts (source .sv/.tcl and result .csv are tracked)
+xsim_verify/xsim.dir/
+xsim_verify/*.wdb
+xsim_verify/*.pb
+xsim_verify/golden_sps8/hls_prj_verify/
 vitis_hls.log
 
 #  IP package
