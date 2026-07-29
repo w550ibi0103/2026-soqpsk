@@ -43,6 +43,10 @@
 9. Channel (PIPO/FIFO) Profiling: 追蹤 Dataflow 任務之間互相傳遞資料的 FIFO 或 PIPO (Ping-Pong Buffer) 的使用深度. 當你發現硬體的吞吐量(Throughput)不如預期, 資料卡在某個階段時勾選. 模擬跑完後, 工具會出具報告, 告訴你哪個 FIFO 容量設得太小導致瓶頸, 你就可以針對性地去修改 #pragma HLS stream depth=N 來加大緩衝區.
 10. Dynamic Deadlock Prevention: 在模擬期間自動調整內部 FIFO 的大小, 以防止因為緩衝區不足而導致的死結. 當你遇到 Dataflow 死結, 但不確定 FIFO 該設多大時, 可以勾選讓工具幫你動態嘗試.
 
+## 如何直接用 Vivado 直接打開 wdb 檔
+1. cd 到 該檔案的資料夾輸入以下指令
+2. C:\Xilinx\Vivado\2023.2\bin\xsim.bat wave_verify_sps8_lut.wdb -gui
+
 ## top.h
 1. void 在 C++ 中代表「空」或「無類型」. 在這裡, 它放在 function(函式)名稱 tfm_modulator 的最前面, 用來表示這個函式執行完畢後, 不會回傳任何數值.
 2. void tfm_modulator 則代表它純粹執行內部的硬體邏輯, 資料的輸入與輸出都是透過參數(如 stream)來處理, 不需要傳統的 return 數值.

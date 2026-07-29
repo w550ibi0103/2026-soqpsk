@@ -16,6 +16,9 @@ int main() {
 		hls::stream<data_t> debug_pulse;
 		hls::stream<data_t> debug_phase;
 		hls::stream<data_t> debug_freq;
+		hls::stream<data_t> debug_alpha_stream;  // DIAGNOSTIC-ONLY, see top.h
+		hls::stream<ap_uint<1> > debug_idle_stream;  // DIAGNOSTIC-ONLY, see top.h
+		hls::stream<ap_uint<8> > debug_current_bit_stream;  // DIAGNOSTIC-ONLY, see top.h
 	#endif
 
 	// --------------------------------------------------------
@@ -79,7 +82,8 @@ int main() {
 
 	tfm_modulator(bit_in, i_out, q_out
 		#ifdef HW_DEBUG_MODE
-			, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq
+			, debug_current_bit, debug_alpha, debug_pulse, debug_phase, debug_freq, debug_alpha_stream
+			, debug_idle_stream, debug_current_bit_stream
 		#endif
 	);
 
@@ -97,6 +101,26 @@ int main() {
 			debugfile << j << "," << db_pulse.to_double() << "," << db_phase.to_double() << "," << db_freq.to_double() << std::endl;
 		}
 		debugfile.close();
+
+		// DIAGNOSTIC-ONLY: debug_alpha_stream writes once per BIT (not per
+		// sample), so it only has NUM_BYTES * 8 beats total.
+		std::ofstream alphafile("debug_alpha_stream.csv");
+		alphafile << "BitIndex,Alpha" << std::endl;
+		for (int j = 0; j < NUM_BYTES * 8; j++) {
+			data_t db_alpha = debug_alpha_stream.read();
+			alphafile << j << "," << db_alpha.to_double() << std::endl;
+		}
+		alphafile.close();
+
+		// DIAGNOSTIC-ONLY: idle_mode/current_bit, also once per bit.
+		std::ofstream idlefile("debug_idle_stream.csv");
+		idlefile << "BitIndex,Idle,CurrentBit" << std::endl;
+		for (int j = 0; j < NUM_BYTES * 8; j++) {
+			ap_uint<1> db_idle = debug_idle_stream.read();
+			ap_uint<8> db_bit = debug_current_bit_stream.read();
+			idlefile << j << "," << (int)db_idle << "," << (int)db_bit << std::endl;
+		}
+		idlefile.close();
 	#endif
 
 	// --------------------------------------------------------

@@ -10,9 +10,9 @@
 # tfm_modulator 動態 SPS / Free-Running 改造(2026-07-07)
 
 ## 改了什麼(src/top.h, src/top.cpp, tb/tb_top.cpp)
-1. `reset` 參數與 `s_axilite` 上的 reset 暫存器整個移除, 交給 HLS 預設的 `ap_rst_n` 硬體腳位處理, `if(reset){...}` 那段手動歸零邏輯也拿掉, 全部靠 static 變數的 C++ initializer 當作 reset 值.
+1. 放棄用軟體手動控制重置, 改為完全依賴底層硬體的標準重置機制. 原本設計中有一個名叫 reset 的變數, 並且被綁定到 s_axilite (AXI4-Lite) 介面上. `reset` 參數與 `s_axilite` 上的 reset 暫存器整個移除, 交給 HLS 預設的 `ap_rst_n` 硬體腳位處理, `if(reset){...}` 那段手動歸零邏輯也拿掉, 全部靠 static 變數的 C++ initializer 當作 reset 值. 在 C/C++ 寫 HLS 時, 如果你宣告了一個 static 變數並賦予初始值, HLS 編譯器非常聰明, 它會知道這些 0 和 true 就是這些暫存器的「預設狀態」. 當硬體腳位 ap_rst_n 被拉低（觸發硬體重置）時, FPGA 底層的暫存器 (Flip-Flops) 會自動回到這些初始值.
 2. `#pragma HLS INTERFACE s_axilite port=return bundle=CTRL` 改成 `#pragma HLS INTERFACE ap_ctrl_none port=return`, 讓這顆 IP 變成真正的 free-running 資料流 IP, 不需要 PS 寫 `ap_start`.
-3. 新增 `ap_uint<2> sps_sel` 參數, 走一個小的 `s_axilite` bundle(`CTRL`), 用來動態選擇 SPS(16/8/4/2), 對應 `active_sps = SPS_MAX >> sps_sel`(sps_sel: 0→16, 1→8, 2→4, 3→2). 這個 register 不影響 free-running, 只是額外開一個小控制窗口.
+3. 新增 `ap_uint<2> sps_sel` 參數, 走一個小的 `s_axilite` bundle(`CTRL`), 這個 CTRL bundle 就是開了一扇小窗戶, 讓 CPU 可以隨時把新的 sps_sel 值寫進來, 用來動態選擇 SPS(16/8/4/2), 對應 `active_sps = SPS_MAX >> sps_sel`(sps_sel: 0→16, 1→8, 2→4, 3→2), 沒有寫成 SPS_MAX / sps, 而是利用位元右移（Right Shift）來實現除法. 這個 register 不影響 free-running, 只是額外開一個小控制窗口.
 4. 原本的函式 body 包進 `BYTE_LOOP: while(1)`, 在 `#ifndef __SYNTHESIS__` 底下用一個計數器(`CSIM_MAX_ITERS`, 定義在 top.h, 目前是 8)在 C 模擬時跳出迴圈避免卡死; 合成後(`__SYNTHESIS__` 有定義)這段跳出邏輯整個消失, 變成真正的無窮迴圈.
 5. 新增 4 張各自 `ARRAY_PARTITION complete` 的係數表 `g_coeff_sps16/8/4/2`(都是 `G_LEN_MAX=128` 長度, 短的表由 C++ aggregate initializer 自動補零), MAC 迴圈用 `switch(sps_sel)` 在乘法器輸入端選當下要用的係數, 不是做 4 組平行乘法樹(csynth 結果證實 DSP 沒有變貴, 見下方).
 6. `bit_idx`/`s`(sample-in-symbol index)/相位增量(`PHASE_SCALE[sps_sel]`)/TLAST 判斷式全部從固定的 `SPS` 巨集改成 runtime 的 `active_sps`/`shift_amt`.
@@ -39,13 +39,13 @@
 # tfm_modulator 迴圈攤平 + 刪除 SPS=2(2026-07-09)
 
 ## 動機:BYTE_LOOP 沒有真的每個 clk 都輸出 IQ
-規劃「bypass `tx_fir_interpolator`、直接接 `tx_adrv9009_tpl_core`」這個插入點方案時發現, 上面 2026-07-07 那版雖然 `MAIN_LOOP` 本身 `achieved II=1`, 但外層 `BYTE_LOOP` 沒有被攤平/pipeline: `tfm_modulator_csynth.rpt` 的 Instance 表顯示 `grp_tfm_modulator_Pipeline_MAIN_LOOP_fu_696` 的 `Interval == Latency`(min=119/max=231), 代表下一個 byte 的 `MAIN_LOOP` 必須等上一個 byte 的 pipeline 完全 drain 才能開始, byte 與 byte 交界處有一大段空窗. 換算吞吐效率(輸出樣本數/實際耗費 cycle 數): SPS=16 約 55%, SPS=2 只有約 13%. `dac_data` 這個介面是無 handshake 的固定速率 port, 這樣的空窗會讓 DAC 拿到 stale 資料, 所以這不是「效能優化」而是這個插入點方案能不能成立的先決條件.
+規劃「bypass `tx_fir_interpolator`、直接接 `tx_adrv9009_tpl_core`」這個插入點方案時發現, 上面 2026-07-07 那版雖然 `MAIN_LOOP` 本身 `achieved II=1`, 但外層 `BYTE_LOOP` 沒有被攤平/pipeline: `tfm_modulator_csynth.rpt` 的 Instance 表顯示 `grp_tfm_modulator_Pipeline_MAIN_LOOP_fu_696` 的 `Interval == Latency`(min=119/max=231), 代表下一個 byte 的 `MAIN_LOOP` 必須等上一個 byte 的 pipeline 完全 drain 才能開始, byte 與 byte 交界處有一大段空窗, 這在 HLS 中代表「管線抽空（Pipeline Drain）」. 換算吞吐效率(輸出樣本數/實際耗費 cycle 數): SPS=16 約 55%, SPS=2 只有約 13%. `dac_data` 這個介面是無 handshake 的固定速率 port, 這樣的空窗會讓 DAC 拿到 stale 資料, 所以這不是「效能優化」而是這個插入點方案能不能成立的先決條件.
 
-根本原因是 `MAIN_LOOP` 的邊界 `active_sps*8` 是 runtime 變數(取決於 `sps_sel`), Vitis HLS 的自動 `LOOP_FLATTEN` 只支援邊界是編譯期常數的完美巢狀迴圈, 用不上, 只能手動合併.
+根本原因是 `MAIN_LOOP` 的邊界 `active_sps*8` 是 runtime 變數(取決於 `sps_sel`), Vitis HLS 的自動 `LOOP_FLATTEN` 只支援邊界是編譯期常數(Compile-time constant)的完美巢狀迴圈, 而 active_sps 是由前一段提到的 sps_sel 這個 AXI-Lite 暫存器在執行期 (Runtime) 動態決定的. 工具遇到這種「變動邊界」的迴圈, 會直接放棄自動攤平, 用不上, 只能手動合併.
 
 ## 改了什麼(src/top.cpp)
 1. 拿掉 `MAIN_LOOP` 這層 `for`, 把 `BYTE_LOOP`/`MAIN_LOOP` 合併成一層 `while(1)` + `#pragma HLS PIPELINE II=1`. 用一個 static counter `iter_in_byte`(0 .. active_sps*8-1)取代原本內層 for 迴圈的隱含計數器, 在 `iter_in_byte==0` 時做「原本 BYTE_LOOP 開頭」那段(解碼 `shift_amt`/`active_sps`/`phase_idx`、`bit_in.read_nb` 讀新 byte), 每個 cycle 結尾判斷 `iter_in_byte` 是否到 `active_sps*8-1` 決定要繞回 0(進入下一個 byte)還是 +1.
-2. `alpha`/`current_bit`/`current_byte`/`is_burst_end`/`idle_mode` 全部從一般區域變數改成 `static`——原本它們能在同一個 byte 的 `active_sps` 次迭代間存活, 是靠外層 for 迴圈的 C++ block scope 圍住, 攤平成一層之後沒有這個 scope 了, 必須手動 `static` 才能存活, 這是這次修改最容易出錯的地方.
+2. `alpha`/`current_bit`/`current_byte`/`is_burst_end`/`idle_mode` 全部從一般區域變數改成 `static`——原本它們能在同一個 byte 的 `active_sps` 次迭代間存活, 是靠外層 for 迴圈的 C++ block scope 圍住, 攤平成一層之後沒有這個 scope 了, 必須手動 `static` 才能存活, 這是這次修改最容易出錯的地方. 因為外層迴圈的括號（Scope）沒了, 原本能「活過內層迴圈好幾次迭代」的變數, 現在每次進入這個單層迴圈都會被視為全新的變數. 在 C/C++ HLS 中, 宣告為 static 的變數, 在轉換成硬體時會被綜合（Synthesized）成具備記憶功能的暫存器（Registers）. 它們的值在跨越時鐘週期（Clock cycles）或迴圈迭代（Iterations）時會被保留下來.
 3. `#ifndef __SYNTHESIS__` 底下的 C 模擬中斷邏輯(`csim_iter_count`)從「每次外層迴圈(=每個 byte)加 1」改成「只在 `iter_in_byte` 即將繞回 0 的那個 cycle才加 1、判斷要不要 break」, 確保還是處理完整數個 byte 才跳出, 不會在 byte 中途被切斷.
 4. `PHASE_SCALE[sps_sel]` 改成 `PHASE_SCALE[phase_idx]`, `phase_idx` 跟 `shift_amt` 一樣只在 byte 邊界解碼, 且對 `sps_sel==3`(已刪除的 SPS=2)clamp 回 0(等同 SPS=16), 避免陣列縮小後越界.
 
@@ -162,16 +162,23 @@ end
 - 注意: 在 160MHz 這個較緊的時脈下, HLS 選了完全不同的資源配置(DSP 109→3, LUT 14820→21337, FF 37206→10224), 不是舊的 100MHz 版本硬撐更快而已, 所以「先跑一個較鬆的時脈當作已驗證」不能直接套用到更緊的規格, 需要針對實際目標時脈重新 csynth 才算數.
 
 ## 2. Cosim 限制:重新確認過, 結論不變
-`ap_ctrl_none`(free-running)+ `sps_sel` 這個 `s_axilite` port 混用, Vitis HLS 2023.2 的 cosim 直接拒絕(`WARNING: [COSIM] found non-self-synchronizing top I/O sps_sel`), 這是工具限制不是設計錯誤. `scripts/run_hls.tcl` 的 `cosim_design` 保持註解狀態.
+`ap_ctrl_none`(free-running)+ `sps_sel` 這個 `s_axilite` port 混用, Vitis HLS 2023.2 的 cosim 直接拒絕(`WARNING: [COSIM] found non-self-synchronizing top I/O sps_sel`), 這是工具限制不是設計錯誤. `scripts/run_hls.tcl` 的 `cosim_design` 保持註解狀態. Vitis HLS 提供了一個叫 Cosim (C/RTL Co-simulation) 的功能, 它可以自動把你的 C++ 測試平台（Testbench）與合成出來的 Verilog/VHDL 硬體接起來做模擬. 但是 Cosim 的自動包裝工具（Wrapper）非常依賴 ap_start、ap_done 這類交握訊號來決定「什麼時候要把 C++ 裡的參數寫入硬體」. 拔掉了全局控制（ap_ctrl_none）, Cosim 的自動包裝工具突然失去了「時間基準點」, sps_sel 這個 AXI-Lite 介面是一個非自我同步 (non-self-synchronizing) 的介面! 你沒有 ap_start 告訴我什麼時候該寫入這個值, 我不知道怎麼在模擬環境中驅動它.
 
 ## 3. 繞過 cosim: 手寫 XSIM testbench 直接驗證匯出的 RTL
 不依賴 HLS 自己的 cosim/post-check 機制(對 free-running 設計的時序對齊本來就有問題, 見 `verify_tmp` 的舊發現), 改成:
 - 用 `xvlog`/`xelab`/`xsim`(Vivado 內建, `C:\Xilinx\Vivado\2023.2\bin`)直接編譯 `hls_prj/solution1/syn/verilog/*.v` + 手寫的 SystemVerilog testbench, 完全繞開 HLS cosim.
 - 產出物: `xsim_verify/tb_xsim_top.sv`(對真實 hls_prj 介面, 含 AXI4-Lite `sps_sel` write)、`xsim_verify/tb_xsim_top_sps16_default.sv`(不做任何 write, sps_sel 停在預設 0=SPS16 的乾淨對照組)、`xsim_verify/tb_xsim_verify_sps8.sv`(對 `verify_tmp` 簡化介面, sps_sel 編譯期釘死=1/SPS8, 完全沒有 s_axi_CTRL, 不可能 race)、對應的 `scripts/run_xsim_verify*.sh` 驅動腳本.
+- 不再依賴 HLS 自動生成的 C/RTL 包裝, 而是直接拿 HLS 合成出來的最終產物（也就是 hls_prj/solution1/syn/verilog/*.v 裡的純 Verilog 原始碼）.
+- 工具鏈 (xvlog / xelab / xsim): 這是 Xilinx Vivado 內建的純文字介面模擬三劍客. xvlog: 負責編譯 (Compile) Verilog/SystemVerilog 程式碼. xelab: 負責展開與連結 (Elaborate), 建立整個硬體的階層架構. xsim: 負責實際跑模擬 (Simulate) 產生波形.
+- 第一階段 (真實環境挑戰): tb_xsim_top.sv, 目標: 測試最真實, 最完整的 IP. 動作: 在 SystemVerilog 裡模擬 CPU 的行為, 按照 AXI4-Lite 的時序標準, 手動把訊號打進去, 真實寫入 sps_sel 暫存器. 這證明了「邊跑資料流、邊動態改參數」是成功的.
+第二階段 (乾淨對照組): tb_xsim_top_sps16_default.sv, 目標: 確認預設狀態是否正常. 動作: 一樣接上完整的 IP, 但故意不去寫 AXI4-Lite. 讓 sps_sel 停留在 HLS 賦予的初始值（0, 也就是 SPS16）.
+- 第三階段 (極端隔離組): tb_xsim_verify_sps8.sv, 目標: 排除一切外部干擾, 純測核心演算法（針對特定的 SPS=8）. 動作: 這個 TB 對接的是一個「被閹割/簡化」的 IP 版本 (verify_tmp). 這個版本裡, 開發者把 s_axi_CTRL 整個拔掉, 把 sps_sel 在編譯期直接釘死（Hardcoded）為 1 (SPS=8).
 - 波形檔(`.wdb`)可在 Vivado 開啟: `xsim.bat <wdb 檔> -gui`. CSV 輸出格式跟 `tb_top.cpp` 的 `output_waveform.csv` 一致(`Sample,I_Data,Q_Data,TLAST`), 可直接跟 golden C model 逐點比對.
 
 ## 4. 意外發現: debug_current_bit/debug_alpha 是死接腳
 從 `hls_prj/solution1/syn/verilog/tfm_modulator.v` 直接確認: `debug_current_bit`/`debug_alpha` 這兩個 `ap_none` scalar port 在 RTL 頂層被合成成 **`input`**, 而且模組內部完全沒有其他地方引用它們——`top.cpp` 裡對它們的寫入(`debug_current_bit = current_bit;`)在硬體上完全沒有接到任何輸出腳位, 是懸空的. 只有 `debug_pulse`/`debug_phase`/`debug_freq`(這三個是 `hls::stream`/axis 介面)才是真正有效的輸出. 這是 Vitis HLS 對「純量 `ap_none` 輸出」+「`ap_ctrl_none` 自由執行迴圈」這個組合的合成 artifact, 不是設計錯誤——但如果之後真的要靠這兩個訊號做 ILA/ChipScope debug, 現在的合成結果是看不到真實資料的.
+- 這代表在硬體電路上, C++ 裡寫的那句賦值程式碼被 HLS 的死碼刪除（Dead Code Elimination, DCE）機制給徹底優化（閹割）掉了.
+- ap_none 的特性: 這代表這是一根「純量裸線（Scalar wire）」, 沒有任何交握訊號（沒有 Valid, 沒有 Ready）. ap_ctrl_none 的特性: 如前面所說, 這是一個沒有 ap_start/ap_done 的 Free-running IP. HLS 編譯器的邏輯盲區: 當這兩個條件碰在一起時, 編譯器的資料流分析（Dataflow Analysis）會感到困惑. 它看到這兩個變數沒有交握機制來證明「外面有人在等這筆資料」, 且整個 IP 又是無止盡運作的, 它就誤以為「這兩個變數寫了也沒人看」, 於是直接把它們的輸出邏輯拔掉, 甚至錯配成 input 腳位.
 
 ## 5. sps_sel AXI4-Lite write 的 race 問題(已確認根因, 已用替代方案繞過)
 - **現象**: 用 `tb_xsim_top.sv`(真實介面, reset 放開後才做 AXI4-Lite write 把 `sps_sel` 設成 1)跑出來的結果, 從很早的 sample 就開始跟 golden 發散, 且發散型態是「先小後隨時間持續放大」.
@@ -189,14 +196,128 @@ end
 
 - **debug axis stream 的陷阱**: 一開始想直接比 `debug_phase`(axis stream), 但發現這條 debug stream 的 `TVALID` 時序跟 `i_out`/`q_out` 的 `TVALID` 不是對齊的(各自在 pipeline 裡的位置不同, fill latency 不同), 直接拿兩者的 pulse counter 對比會找到一個乾淨但難以直接解讀的偏移量(測出 16), 且該偏移量會導致看不到我們真正關心的那個 sample 的值. **教訓: 不要用 debug axis stream 的 TVALID pulse 計數器去跟主要輸出對齊, 這個方法不可靠.**
 - **正確做法**: 從生成的 RTL(`tfm_modulator.v`)直接追出 `current_phase` 對應的內部訊號 `ap_sig_allocacmp_in`(`debug_phase_TDATA` 就是從它 sign-extend 出來的, 可用 `grep -n "ln302\|allocacmp_in"` 追出), 在 testbench 用 hierarchical reference(`dut.ap_sig_allocacmp_in`)**每個 clock cycle 都讀取**, 不透過任何 axis stream 的 handshake, 完全避開上面的對齊問題. 另外準備一個絕對 clock cycle 計數器當共同座標, 讓「這個內部訊號的值」跟「`i_out` 在哪個 cycle 輸出哪個 sample」可以直接對應, 而不是用兩個獨立遞增的 pulse counter 去互相猜偏移量.
+- 因為管線深度不同（Fill Latency 不同）, debug_phase 的 TVALID 會比 i_out 提早 16 個 Clock cycles 跑出來. 如果你傻傻地拿兩邊的第 5 個 Valid pulse 來對比, 你比對到的其實是「不同時間點」產生的資料, 這會導致除錯時完全看錯狀態, 抓不到真正引發錯誤的瞬間.
+- Hierarchical Reference (階層式參考): 這是在 SystemVerilog Testbench 中極度強大的功能. 你不需要把這個內部訊號拉成模組的實體腳位, 只要透過類似物件導向的路徑語法 dut.ap_sig_allocacmp_in (假設 dut 是你的 IP 實體化名稱), Testbench 就能像 X 光機一樣, 直接穿透模組, 看見晶片深處這個暫存器在每個 Clock cycle 的值.
+- 正確的做法: 建立「絕對時間座標 (Absolute Clock Cycle), 不再使用「這是第幾個吐出來的 Valid 資料」這種相對計數法, 在 Testbench 裡自己寫一個絕對的 Clock Cycle 計數器, 現在, 除錯邏輯變成:「在絕對時間第 1000 個 Cycle 時, 我用 X 光機 (dut.ap_sig_allocacmp_in) 看到內部狀態是 A; 然後到了第 1016 個 Cycle 時, 我看到 i_out 輸出了數值 B.
 - **結果**: 用已知吻合的 iteration 22→23 轉折點校正出 cycle-to-iteration 的對應公式, 驗證 iteration 9(I/Q 開始發散的那個點)的 `current_phase`:
   - golden(C model) 在 iteration 9 的 phase = 0.00000000
   - RTL(`ap_sig_allocacmp_in` 讀出來的) 在 iteration 9 的 phase = 0.000000
   - **兩者完全吻合**, 但同一個 iteration, `q_out` 的實際輸出: golden=0.000244141(≈sin(0)), RTL=0.002441(明顯不是 sin(0) 該有的值).
 - **結論**: `current_phase` 進入 `hls::cos`/`hls::sin`(CORDIC)之前, C model 跟 RTL 完全一致——**問題確定出在 CORDIC 這一步本身**. 而且不是單次誤差: 同一個(接近 0 的)相位值連續好幾個 iteration, RTL 的 `sin` 輸出沒有維持在該有的常數值, 而是持續緩慢飄移, 比較像 CORDIC 這個共用/pipeline 化硬體單元, 內部可能有殘留狀態沒有隨每次呼叫乾淨重置, 不只是開機瞬間的一次性相位偏移問題.
 
-## 目前狀態與待辦
-- 客戶規格(160MHz/SPS=8 吞吐量)已確認可達成, `scripts/run_hls.tcl` 已更新為正式 baseline.
-- RTL vs C model 的發散根因已鎖定在 `hls::cos`/`hls::sin`(CORDIC), 尚未查到 CORDIC 內部確切的問題點(例如 iteration 數/延遲設定, 或是否為已知的 Vitis HLS 限制).
-- 尚待決定: (a) 繼續往 CORDIC 內部查(例如檢查 HLS CORDIC 設定、或改用查表法取代), 或 (b) 評估這個飄移對實際 SOQPSK 解調的影響有多大, 再決定是否值得投入更多時間修.
-- 這次調查用到的檔案都在 `xsim_verify/`(testbench、golden CSV、比對用的中間 CSV)與 `scripts/run_xsim_verify*.sh`, 都保留下來(不像 `hls_prj_verify/` 那樣每次用完就刪), 方便之後繼續查.
+## 9. 決定放棄繼續查 CORDIC 內部, 改用 256-entry LUT 取代(2026-07-27)
+第 8 節鎖定問題在 `hls::cos`/`hls::sin`(CORDIC)這個 Vitis HLS 內建、封閉原始碼的元件, 繼續往內部查等於要逆向工具自己的排程, 投入產出比不確定. 改採直接換掉的方向:
+- **table sizing 分析**: `data_t = ap_fixed<16,4>`(12 個小數位元, LSB≈2.44e-4 rad). 直接查表(無內插)要壓到 1 LSB 誤差需要 N≈π/LSB≈12869→取 2 的冪=16384 entries. 線性內插誤差公式 π²/(2N²), N=256 時誤差≈0.31 LSB, N=512 時≈0.077 LSB——內插版用 256 entries 就有安全邊際, 比直接查表省 64 倍空間, 只多一個乘法器.
+- 精度要求: 系統使用的是 ap_fixed<16,4> 定點數（4 bit 整數, 12 bit 小數）.其最小刻度 (LSB) 約為 2.44*10^{-4}弧度.
+- 方案 A (直接查表): 如果不做任何內插, 要達到這個精度, 查表陣列需要 16384 筆資料. 在 FPGA 裡, 這會吃掉寶貴的 BRAM (Block RAM) 資源.
+方案 B (線性內插法): 利用相鄰的兩個點連線來估算中間值. 根據誤差公式 {pi^2}/{2N^2}, 當點數 N=256 時, 最大誤差僅 0.31 LSB（遠小於系統要求的 1 LSB）. 採用方案 B, 表格大小從 16384 狂砍 64 倍變成 256 筆, 代價僅僅是多花費一個乘法器 (DSP Slice).
+- **實作**: `scripts/gen_sincos_lut.ps1`(產生 `src/sin_lut.inc`/`src/cos_lut.inc`, 256 筆, 涵蓋 `[-π,π)`, 跟 `gen_g_coeffs.ps1` 同款寫法)、`top.h` 新增 `LUT_SIZE`/`phase_pos_t`(`ap_fixed<24,10>`, 一次乘法同時取出 table index 跟內插權重, 不用額外除法)、`top.cpp` 用 `SIN_LUT[]`/`COS_LUT[]` + 線性內插取代 `hls::cos`/`hls::sin`, index 255→0 靠 `ap_uint<8>` 溢位自動 wrap(entry 0 跟隱含的 entry 256 是圓上同一點, 這個 wrap 是對的).
+- 定點數切片的魔法: 一次乘法搞定 Index 與 Weight. 刻意設計了 24-bit 的定點數結構, 透過一次單純的乘法（將輸入相位乘上某個比例常數）, 算出來的結果在二進位結構上, 會自然地分佈為兩部分: 高位元 (整數部分), 直接對應 0~255 的 Table Index（要抓表裡的哪兩個點）. 低位元 (小數部分), 直接就是線性內插需要的權重 (Weight). 完全不需要除法器, 一個 Clock cycle 就完美萃取出索引和權重.
+- 利用硬體「溢位 (Overflow)」實現完美的相位環繞 (Wrap-around): 三角函數是一個圓, 相位走到 2pi 時, 應該要回到 0. 刻意把 Table index 宣告為 8-bit 的無號整數 ap_uint<8>, 當 Index 算出來是 255, 再往前走一步變成 256 時, 因為 8-bit 裝不下（最大只到 255）, 它在硬體上會自然溢位 (Overflow) 歸零變成 0.
+- **C model 驗證**(丟棄式暫時專案, 驗完即刪): `csim_design` PASS, 1024 樣本. 額外做「單位圓半徑」`sqrt(I²+Q²)` 檢查, 全程穩定在 0.9994~1.0005, **沒有隨時間放大的趨勢**——這正是 CORDIC 缺少的特性.
+- **RTL 合成**(`verify_tmp/`, resync 過 LUT 改動): `csim_design`/`csynth_design` PASS, 達成 `II=1`, `Depth=15`, **`Estimated Fmax=225.77MHz`**(比 CORDIC 版本寬鬆很多, 對後續衝更高吞吐量的目標也是加分).
+
+## 10. LUT 在 RTL 裡的正確性: 用「自我一致性掃描」直接證實(2026-07-27)
+第一次拿 RTL 輸出(`Sample` 編號)直接跟 golden CSV 逐點比, 從 sample ~11 開始就對不上、越後面差越大, 一度以為 LUT 在 RTL 裡也有問題. 深入後發現這是比對方法錯, 不是設計錯:
+- 用 `debug_phase` axis stream 追查一開始顯示 phase 對不上, 但這正是第 8 節記錄過的「debug axis stream 陷阱」(TVALID 時序跟主輸出不對齊), 又踩了一次.
+- **決定性測試**: 把 `sin_lut.inc`/`cos_lut.inc` 的表格資料與內插公式原封不動搬到 PowerShell 重算一次, 拿 RTL 內部 `current_phase` 暫存器(hierarchical reference, 每個 clock 都採樣)的實際數值去餵這個獨立重算的 LUT, 同時掃描「暫存器→輸出」之間可能的管線延遲(0~20 cycles). 在延遲=**8 cycles** 時誤差瞬間掉到 ~0.0009(約 2 LSB), 左右移動 1 cycle 誤差就暴增 300 倍以上——非常乾淨無歧義. 為了確認自己手刻的「查表法 + 內插法（LUT）」到底有沒有算錯, 或者有沒有被 HLS 工具合成壞掉, 特地在軟體（PowerShell）裡寫了一個絕對正確的「對照組」, 拿硬體抓出來的真實輸入去餵給軟體算, 最後證明硬體的運算結果跟軟體完美吻合（只晚了 8 個 Clock）.
+- 確定性函數 (Deterministic): 這在數位邏輯中是非常高的評價. 代表 LUT 模組是一個「純函數 (Pure Function)」. 給定一個 X, 8 個 clock 後一定會吐出完美的 Y. 沒有飄移, 沒有殘留狀態: 在 DSP 設計中, 最怕遇到變數忘記初始化, 或是迴圈裡有隱含的 Feedback (回授), 導致前幾次的運算狀態「殘留」下來污染現在的數值.
+- **結論**: **RTL 裡的 LUT(ROM 讀取+內插)是 `current_phase` 的一個乾淨確定性函數, 固定 8-cycle 延遲, 沒有飄移、沒有殘留狀態. LUT 本身沒問題, 這點結論很穩.**
+- 「RTL 輸出 vs golden CSV 逐點對不上」後來查到是比對方式的問題: RTL 的 `Sample` 計數器相對 `Cycle`(絕對 clock 數)有一個**完全固定的 +16 offset**(sample 0~115+ 都驗證過, 沒有任何 bubble), 用 `golden iteration = Sample + 16` 對齊後, 前 ~55 個樣本逐位元完全吻合.
+
+## 11. 真正的發散點: current_phase 從 iteration ~48 開始平滑放大(2026-07-27)
+延伸 hierarchical reference 探針到更大範圍, 系統性掃描 `current_phase` 整段軌跡: `golden iteration = cycle + 8` 這個固定關係一路精確吻合到 iteration ~47(含 byte 0 中段), 但從 **iteration ~48 開始出現一個很小(~1 LSB)、之後隨 iteration 平滑放大的落差**(不是突然跳一下). 這個時間點還在 byte 0 範圍內(離第一個 byte 邊界 sample 64 還有距離), 排除是 `bit_in` byte 邊界時序造成的.
+
+## 12. 排除假設: 128-tap FIR 加總順序(2026-07-27)
+懷疑 `#pragma HLS UNROLL` 讓 HLS 把 128-tap 加總排成跟 C model 循序 `+=` 不同順序的平行加法樹, 造成非結合律誤差.
+- 先拿掉 `#pragma HLS UNROLL`——RTL 結構(暫存器名稱、`Depth`)完全沒變, 證實無效實驗(HLS 為滿足外層 `PIPELINE II=1` 自動照樣展開).
+- 改用真正管用的 `#pragma HLS EXPRESSION_BALANCE off`(控制能不能把加總鏈重排成加法樹的開關). 確認真的改變結構(暫存器改名、`Depth` 15→20、`Fmax` 225.77→220.85MHz), 但重新對齊 `freq_dev` 後跟原版本比對, **每個 golden iteration 的誤差數值逐位元完全相同**.
+- **結論: 128-tap FIR 加總順序/平行化不是原因, 已排除.** 跟第 6/7 節「加寬精度」實驗(否證溢位)從兩個不同角度印證同一件事: FIR 加總這個步驟本身是乾淨的. 診斷用 pragma 已改回原狀.
+
+## 13. C model 演算法本身逐階段對過 Python golden, 全部通過(2026-07-27/28)
+用 `src/soqpsk-tg.py`(使用者原本的 Python 浮點參考模型)驗證, 改成 SPS=8 + 完整 64-bit 連續輸入(原始腳本預設 SPS=16、只有 32-bit)重跑同一套 Block 1~5 邏輯, 程式化(非手抄)逐 sample 輸出比對:
+
+| 階段 | 比對方式 | 結果 |
+|---|---|---|
+| Delta(差分編碼) | 64 點逐項比對 | 0 個不一致 |
+| Alpha(precoder) | 64 點逐項比對 | 0 個不一致 |
+| g(t) 脈衝係數 | 64 taps 逐項比對 | 最大差 1.67e-16(浮點誤差等級) |
+| freq_dev(FIR 輸出) | 512 點逐項比對 | 最大差 0.0009(~3-4 LSB), 512 點裡只有 31 點超過 2.4 LSB |
+| Phase | 512 點逐項比對 | 最大差 0.032, **有界、沒有隨時間發散** |
+| I/Q | 512 點逐項比對 | 最大差 ≈0.032, 跟 Phase 誤差一致 |
+
+**結論: C model(不管 CORDIC 版還是 LUT 版)的演算法本身沒問題**, 跟獨立的 Python 浮點參考模型吻合(整數階段完全一致, fixed-point 階段是正常有界的量化誤差, 不是邏輯錯誤). 這跟 RTL 那邊「持續放大、最後幾乎完全對不上」的性質完全不同, 後者不是量化誤差能解釋的.
+（過程中手抄 Delta 表格時抄錯三個 byte 的數值, 被使用者拿他自己的 Python golden 一比對就抓到, 已更正——之後全面改成程式化比對, 不再手抄.）
+
+## 14. testbench 本身的一個真實 bug: TVALID 多撐一拍, 已修但確認跟主線無關(2026-07-28)
+重新檢查 `xsim_verify/tb_xsim_verify_sps8_lut.sv` 的 AXI4-Stream master 驅動邏輯(byte 0 手動段落 + `stream_byte` task), 兩處都有同一個 pattern:
+```
+while ((bit_in_TVALID && bit_in_TREADY)) @(posedge ap_clk);  // 偵測到 handshake 完成
+@(posedge ap_clk);              // 又多等了一拍 ← bug
+bit_in_TVALID <= 1'b0;
+```
+handshake 完成後又多等一拍才放 `TVALID`——如果 DUT 這邊的 `regslice_both`(register slice)在那多出來的一拍 `TREADY` 剛好還是高的, 會把同一筆資料**多送一次**. 已修正(handshake 偵測到就同一時刻放掉 `TVALID`).
+- **修復後行為確實改變**: 樣本數 1337→1272, 模擬結束時間提早了整整 65 個 cycle(≈一個 byte 週期), 佐證修復前真的有多送一次的情況.
+- 但重新比對 `current_phase`/`freq_dev`, **iteration ~48 那個發散點的數值完全沒變**(逐位元相同)——這個 testbench bug 是真的, 值得修, 但**跟主線發散問題無關**(divergence 起點在 byte 0 內部, 早於任何 byte 邊界, 這個 bug 只可能在跨 byte 邊界後才會顯現).
+
+## 15. 嘗試追 shift_reg/impulse/alpha 在 RTL 的真實值, 目前失敗(2026-07-28)
+想確認 iteration ~48 附近開始活躍的、比較深的 FIR tap 對應的係數/shift_reg 資料路徑是否正確, 連續三次嘗試都失敗: 在 Vitis HLS 中, C++ 的變數名稱轉成 Verilog 後通常會被加上一堆奇怪的後綴字（例如 _fu_358、_regslice）. 開發者試圖在這些幾千行的程式碼中「猜」出自己要的訊號.
+1. 猜測訊號 `icmp_ln183_reg_5645`(gate)+ `ap_sig_allocacmp_impulse`(value)手動組合——量出來的非零脈衝間隔(period 8)跟 golden 的稀疏型態(period 16 甚至更疏)對不上.
+2. 懷疑是自己把兩個訊號拼在一起時產生了時間差（Race condition）, 於是改去讀取 HLS 已經幫你組好的線. 改讀 RTL 已經算好的組合線 `debug_pulse_TDATA_int_regslice`——結果一樣, 排除了「兩個訊號手動組合有 race」這個理論, 但沒解決問題, 兩種方法都得到同一組錯誤資料.
+3. 追 `debug_alpha`(scalar `ap_none`)的下游, 找到 `p_0_0_012527_fu_358`——量出來的是「連續保持 8 個 cycle 才變一次」的行為(比較像某個持續性狀態), 但實際數值(例如連續 6 個 bit 週期都是 +1)跟已確認正確的 golden alpha(`0,0,-1,0,1,0,-1,0...`)對不上, 第三次猜錯.
+
+放棄猜測 RTL 自動產生的訊號名稱, 改成**在 `verify_tmp/` 新增一個自訂 `debug_alpha_stream`**(`hls::stream<data_t>`, 只在 `alpha` 算出來那行寫入一次, 語意 100% 確定, 不用反推): 改 `top.h`/`top.cpp`(新增 port + `#pragma HLS INTERFACE axis`)、`tb_top.cpp`(宣告/傳入/drain, 產生 `debug_alpha_stream.csv` golden 對照), 並用 **xsim 的 `open_vcd`/`log_vcd` + `get_objects -r`** 把整個 DUT 階層(1372 個物件)dump 成 VCD, 寫 Python 腳本(`parse_vcd.py`)直接從 VCD 重建這個新 stream 的行為(完全繞開 hierarchical reference 猜名字這件事).
+- 為了確保讀出來的資料沒有被 SystemVerilog 測試平台的寫法干擾, 開發者動用了更底層的手段: Dump 全局波形 (VCD), 使用 xsim 的指令, 把待測設備（DUT）裡面所有 1372 個節點的波形, 全部錄製成標準的 VCD (Value Change Dump) 檔案.
+- VCD 重建結果拍數(161)跟 testbench 探針量到的完全一致——**證實不是探針/testbench 錯, 訊號行為本身就是這樣**: 這個 debug stream 是 `if (s==0)` 觸發, 不管有沒有真實資料都會執行(idle 模式照樣跑, 維持連續載波相位), 所以在 1272-cycle 的模擬全程每 8 cycle 穩定觸發一次(1272/8≈159, 對得上 161), 不是只有真實的 64 個 bit 才觸發——這點本身合理, 不是 bug, 只是我原本的比對假設(只會有 64 拍)是錯的.
+- 以為餵進去 64 個資料位元（bits）, 硬體就只會觸發 64 次 alpha 運算. 但 VCD 顯示它觸發了 161 次! 為什麼? 因為這是通訊系統的硬體. 為了維持無線電載波的連續相位, 即使在沒有真實資料的「Idle 模式」, 硬體底層的狀態機依然會持續空轉、持續吐出相位. 所以在總長 1272 cycles 的模擬中, 每 8 個 cycle 觸發一次, 總共 159~161 次是完全合理的物理現象. 這證明了探針沒接錯, 是開發者一開始的「假設」錯了.
+- 修正成只取 RTL 前 64 拍跟 golden 比, 用 -5~+5 拍小範圍位移去對齊, **依然對不上**(最好的位移也還有 31/62 拍不一致, 不是簡單的對齊問題).
+- **矛盾**: 如果 alpha 真的錯這麼多(近 7 成), 由它算出來的 `freq_dev` 不可能在 iteration 30~40 還逐位元完全吻合(第 11 節已證實). 這代表**這次的 `debug_alpha_stream` 比對方法本身還有沒抓到的問題**(這個新 stream 雖然語意明確, 但「不是每個 iteration 都寫」, 在這顆高度 pipeline 化的設計裡的 handshake 行為顯然比預期複雜), 不是 alpha 真的錯. **這條路目前沒有可信結論, 卡在方法論, 不是找到新 bug.**
+
+## 16. 真正的根因: reset 放開瞬間 byte0 被誤判成 idle, 全部資料位移一個 byte(2026-07-28, 用 Vivado GUI 肉眼確認)
+第 15 節在方法論上卡住之後, 改用 Vivado GUI 直接開波形(`xsim.bat <wdb> -gui`, 手動把訊號拖進波形視窗)肉眼看 `debug_alpha_stream_TDATA`, 使用者讀出的前幾拍數值是 `-1,0,1,1,1,1,1,1,0,-1,...`.
+
+- **手動推演驗證**: 把這串數字拿 `alpha` 的計算邏輯(`delta_prev1=1, delta_prev2=0, last_delta=0, odd_flag=false` 初始值)代入, 假設**連續 8 個 bit 全部 `current_bit=0`**(也就是完全處於 idle, 一個 bit 都不是真的)手動算一次, 算出來的序列是 `-1, 0, 1, 1, 1, 1, 1, ...`——**跟波形讀到的數值一模一樣**. 這證實：這串資料根本不是真正的 byte0 內容, 是 idle 模式算出來的.
+- **加上正規 debug stream 直接確認**: 在 `verify_tmp/` 新增 `debug_idle_stream`(`idle_mode`)/`debug_current_bit_stream`(`current_bit`), 同樣在 `if (s==0)` 那個區塊寫入(跟 `debug_alpha_stream` 同一個時間點/頻率), 不用再猜測或反推. 結果**明確、無歧義**:
+
+  | RTL bit index | Idle? | CurrentBit |
+  |---|---|---|
+  | 0~7 | 全部 `1`(idle) | 全部 `0`(dummy) |
+  | 8~15 | `0`(真實資料) | `1,1,1,0,0,1,1,0` = golden byte0(`0x67`) |
+  | 16~23 | `0` | `0,1,0,0,1,1,1,0` = golden byte1(`0x72`) |
+  | 24~31 | `0` | `0,0,1,0,1,1,1,0` = golden byte2(`0x74`) |
+
+  **RTL bit index N(N≥8)= golden bit index(N-8)**, 完全一致, 只差固定 8 個 bit(=1 個完整 byte, 64 sample)的位移.
+
+- **根因**: `bit_in` 是 `hls::stream`/AXI4-Stream, `regslice_both` 這個暫存級電路在 `ap_rst_n` 低電位期間本身也被清空/鎖住, 不管輸入端 `TVALID` 在 reset 之前已經穩定多久, reset 放開的瞬間, regslice 內部輸出還是 reset 值, 需要至少一個真正的 clock edge 才能把外部已經穩定的 `TVALID` 反映到內部——**`BYTE_LOOP` 在 reset 放開後的第一個 cycle 就立刻執行第一次 `bit_in.read_nb()`, 這個時間點通常早於 regslice 的追趕**, 導致第一次讀取幾乎必然撲空, 整個 byte0 被判定成 idle. 真正的 byte0 內容要等到下一次 byte 邊界檢查(本來該輪到 byte1 的時機)才被讀到, 後面所有資料因此永久整體位移一個 byte.
+- **兩種餵資料方式都躲不掉, 證實是 DUT 本身的行為, 不是 testbench 寫法問題**: 分別測過「byte0 在 reset 放開前就準備好」(舊寫法)跟「byte0 也跟 byte1~7 一樣, reset 放開後才正常 AXI4-Stream handshake」(新寫法, 也更貼近真實 DMA/PS 的送資料方式), **兩者的 `debug_idle_stream` 結果完全相同**——不管怎麼送, byte0 都躲不掉這個 race. `xsim_verify/tb_xsim_verify_sps8_lut.sv` 已統一 byte0 跟 byte1~7 用同一套 `stream_byte()` 邏輯(比舊寫法簡單, 也更真實).
+- **串起之前查到的「iteration ~48 才開始發散」**: 之前用 freq_dev/current_phase 追出來的「iteration 40 之前逐位元完全吻合、之後才慢慢跑掉」, 其實就是**同一個 byte0-idle 誤判**造成的, 不是另一個獨立問題. 原因是 g(t)(FIR 脈衝響應)最邊緣幾個 tap 的係數極接近 0(第 6 節查過, ~1e-5 等級), 不管 impulse train 用的是「錯的」(idle 算出來的 `-1,0,1,1,1,1,1,1`)還是「對的」(golden 真實 byte0 的 `0,0,-1,0,1,0,-1,0`), 卷積出來的 `freq_dev` 在最初 20~40 個 sample 都幾乎是 0, 兩者的差異被 g(t) 邊緣係數蓋住、看不出來——一直要等到 impulse 移動到 g(t) 中段真正有份量的 tap, 兩者的差異才會被放大到看得出來, 剛好對上 iteration ~40~48 這個轉折點. **之前「早期完全吻合」不是因為 byte0 真的被正確讀到, 是巧合被 g(t) 邊緣係數掩蓋而已.**
+
+## 17. 這件事對真實系統整合的含義, 以及潛在修法(待決定, 2026-07-28)
+- 這不只是驗證方法的問題: **如果真實硬體上這顆 IP 也有同樣的行為, 代表每次 `ap_rst_n` 放開之後, 第一個 byte 都有被吃掉、後面資料整批位移一個 byte 的風險**. 之後接上真實 DMA/PS 時需要留意(例如確保 reset 放開後、真正開始收資料前有緩衝, 或接收端能容忍/校正這種一次性位移).
+- 討論過一種可能的修法方向: 把 `iter_in_byte==0` 那次的 `bit_in.read_nb()` 從「只在 byte 邊界檢查一次, 沒讀到就整個 byte 判定為 idle、64 個 cycle 後才重試」, 改成「在還沒收到過第一筆真實資料之前(可以用一個新的 `static bool` state, 例如 `cold_start`), 每個 cycle 都重試 `read_nb()`, 直到第一次讀到真實資料才開始正式的 64-cycle-per-byte 計數」——這樣不管 regslice 追趕要花幾個 cycle, 都能自然涵蓋, 不用去猜測/寫死一個固定的等待值.
+  - 這是對 `src/top.cpp`(不只是 `verify_tmp/`)的**真實設計改動**, 需要決定 cold-start 期間要不要維持每個 cycle 都輸出(目前設計是不管有沒有真實資料都必須連續輸出 IQ, 維持 carrier phase 連續, 這是客戶規格的硬性需求, 見文件前段的 122.88/245.76MSPS 討論)——如果 cold-start 期間仍要持續輸出 idle carrier, 只是延後「byte 邊界計數器」真正開始的時間點, 影響範圍較小; 如果要完全不輸出直到收到第一筆資料, 就違反了「每個 clock 都要有 IQ 輸出」這個規格, 不建議.
+  - 尚未實作, 待使用者決定是否要往這個方向修 `src/top.cpp`.
+
+## 18. cold_start 修法在 verify_tmp 驗證成功: RTL 跟 golden 從此逐位元完全吻合(2026-07-29)
+第 17 節提出的修法(`static bool cold_start = true;`, 在還沒收到過第一筆真實資料之前每個 cycle 都重試 `bit_in.read_nb()`, `iter_in_byte` 保持在 0、不進入正常的 64-cycle-per-byte 計數, 直到真的讀到第一筆資料才開始; 期間 `i_out`/`q_out` 仍照常每個 cycle輸出, 只是用 alpha=0 的 idle carrier)已經在 `verify_tmp/` 實作並驗證, **完全有效, 而且比預期還乾淨**.
+
+- **csim**: `TEST PASSED`, 跟修改前行為一致(cold_start 在 C 模擬裡瞬間 resolve, 因為 `tb_top.cpp` 一次把 8 個 byte 全塞進去, 不影響任何既有的 golden CSV).
+- **csynth(使用者同事關心的 II/pipelined 問題)**: `Pipelining result: Target II = 1, Final II = 1, Depth = 15`, `Estimated Fmax = 225.77MHz`——**跟修改前完全相同, II=1 達標, pipeline 成功, cold_start 這個改動沒有任何時序代價**.
+- **RTL 驗證(`debug_idle_stream`/`debug_current_bit_stream`)**: byte0 的 64 個 bit **從 index 0 開始**就正確對上 golden, 不再有 idle 誤判跟 byte 位移, 0 個不一致.
+- **freq_dev/current_phase(hierarchical reference, 全部 512 個 iteration)**: 重新找到正確的 cycle-to-iteration 對應公式(`golden_iteration = cycle - 7`, 這次是負的 offset, 因為 cold_start 改變了整體管線時序; 之前只搜尋正 offset 是失誤, 一度誤以為修復後還有殘留差異, 後來擴大搜尋範圍到負值才找到, 教訓: 每次改動後都要重新用「掃描找尖銳最小值」的方法找 offset, 不要沿用舊值也不要只搜正方向). 用正確 offset 比對, **512 個樣本誤差最大值 0.000001, 0 個不一致**.
+- **i_out/q_out 輸出(offset = -1)**: 同樣**512 個樣本全部逐位元吻合, 最大誤差 0.000001, 0 個不一致**.
+
+**結論**: 之前查到的「iteration ~48 開始平滑放大的落差」**完全就是這個 byte0-idle-誤判/byte 位移造成的, 沒有其他獨立的 bug**——不是 LUT、不是 FIR 加總順序、不是 alpha 計算邏輯、不是 DSP48 rounding, 就是這一個 reset 時序 race. 一次修正, 整條 pipeline(precoder → FIR → phase → LUT → I/Q)從頭到尾都乾淨.
+
+此修法**目前只在 `verify_tmp/` 驗證, 尚未套用到 `src/top.cpp`(正式設計)**, 使用者已決定先不動 `src/top.cpp`, 等確認有效後再議.
+
+## 目前狀態與待辦(2026-07-29)
+- **整個發散問題已經徹底解決, 根因跟修法都已確認**:
+  1. 256-entry LUT 正確取代 CORDIC(第 9/10 節).
+  2. C model 演算法跟 Python 浮點參考模型吻合, 無邏輯錯誤(第 13 節).
+  3. 128-tap FIR 加總順序/平行化不是問題(第 12 節).
+  4. `xsim_verify/tb_xsim_verify_sps8_lut.sv` 的 TVALID 多撐一拍 bug 已修正(第 14 節).
+  5. **真正根因**: `bit_in` 的 AXI4-Stream `regslice_both` 在 reset 放開瞬間還沒追趕上, `BYTE_LOOP` 第一次 `read_nb()` 幾乎必然撲空, byte0 被誤判成 idle, 後面資料永久位移一個 byte(第 16 節).
+  6. **修法(cold_start)已在 `verify_tmp/` 驗證成功, RTL 跟 golden 512 個樣本逐位元完全吻合, 且不影響 II=1/pipeline/時序**(第 18 節).
+- **待決定**: 要不要把 cold_start 這個修法套用到 `src/top.cpp`(正式設計). 使用者傾向的做法(第 17 節分析過): cold-start 期間仍要維持每個 cycle 都輸出 IQ(用 idle carrier), 只延後 byte 邊界計數器真正開始的時間點, 才不會違反「每個 clock 都要有 IQ 輸出」這個客戶硬性規格.
+- 這次(2026-07-27/28/29)新增的檔案都在 `xsim_verify/`(`tb_xsim_verify_sps8_lut.sv`、`xsim_vcd_dump.tcl`、`dut_full_dump.vcd`、各種 golden/rtl 比對用 CSV)與 `scripts/gen_sincos_lut.ps1`, 都保留下來方便之後參考. `verify_tmp/` 已加上 `debug_alpha_stream`/`debug_idle_stream`/`debug_current_bit_stream`(診斷用)跟 cold_start 修法(實驗性, 尚未套用到 `src/top.cpp`).

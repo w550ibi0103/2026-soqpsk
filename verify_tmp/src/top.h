@@ -26,7 +26,6 @@
 // Vitis HLS libraries for fixed-point arithmetic and math functions
 #include <ap_fixed.h>
 #include <ap_int.h>
-#include <hls_math.h>
 #include <hls_stream.h>   // Required for hls::stream interface
 #include <ap_axi_sdata.h> // Required for AXI-Stream packet structures (ap_axiu)
 
@@ -35,6 +34,19 @@
 // Fixed-point type definition: 16-bit word length, 4-bit integer part
 // Range is -8 to +7.99..., resolution is 2^-12 (~0.000244)
 typedef ap_fixed<16, 4> data_t;
+
+// --- Sin/Cos lookup table (replaces hls::sin/hls::cos, see Note.md "CORDIC
+// 發散問題調查"): hls::sin/hls::cos (hls_math.h, CORDIC-based) was confirmed
+// bit-exact into current_phase but produced a growing, non-deterministic
+// RTL-vs-C drift out of sin/cos itself under this design's free-running
+// (ap_ctrl_none) + fully-pipelined (II=1) configuration. A LUT is ordinary
+// combinational/ROM logic with no hidden pipeline state, so it can't exhibit
+// that failure mode; its own error is instead a small, bounded, and known
+// quantity from table quantization (see gen_sincos_lut.ps1 for the sizing).
+#define LUT_SIZE 256  // entries per table; linear-interpolated between them
+// Holds a table position: integer part 0..LUT_SIZE-1 selects the LUT entry,
+// fractional part is the interpolation weight to the next entry.
+typedef ap_fixed<24, 10> phase_pos_t;
 
 // SOQPSK-TG parameters
 #define L 8         // Because the energy of one bit needs to last for L=8 cycles
@@ -74,6 +86,20 @@ void tfm_modulator(
 		, hls::stream<data_t> &debug_pulse
 		, hls::stream<data_t> &debug_phase
 		, hls::stream<data_t> &debug_freq
+		// DIAGNOSTIC-ONLY (temporary, verify_tmp only): a proper named debug
+		// stream for alpha, written once per bit right where alpha is
+		// computed. Added because reverse-engineering which auto-generated
+		// RTL signal holds alpha (via debug_alpha, which is a dangling
+		// ap_none port, or via guessing hierarchical-reference names) proved
+		// unreliable after several wrong guesses -- this sidesteps that by
+		// giving the value an unambiguous, self-defined output.
+		, hls::stream<data_t> &debug_alpha_stream
+		// DIAGNOSTIC-ONLY (temporary, verify_tmp only): same rationale as
+		// debug_alpha_stream -- written once per bit, right where idle_mode
+		// and current_bit are decided, so the byte0-vs-idle timing question
+		// can be checked directly instead of inferred from alpha's shape.
+		, hls::stream<ap_uint<1> > &debug_idle_stream
+		, hls::stream<ap_uint<8> > &debug_current_bit_stream
 	#endif
 );
 

@@ -10,7 +10,6 @@
 // Vitis HLS libraries for fixed-point arithmetic and math functions
 #include <ap_fixed.h>
 #include <ap_int.h>
-#include <hls_math.h>
 #include <hls_stream.h>   // Required for hls::stream interface
 #include <ap_axi_sdata.h> // Required for AXI-Stream packet structures (ap_axiu)
 
@@ -19,6 +18,19 @@
 // Fixed-point type definition: 16-bit word length, 4-bit integer part
 // Range is -8 to +7.99..., resolution is 2^-12 (~0.000244)
 typedef ap_fixed<16, 4> data_t;
+
+// --- Sin/Cos lookup table (replaces hls::sin/hls::cos, see Note.md "CORDIC
+// 發散問題調查"): hls::sin/hls::cos (hls_math.h, CORDIC-based) was confirmed
+// bit-exact into current_phase but produced a growing, non-deterministic
+// RTL-vs-C drift out of sin/cos itself under this design's free-running
+// (ap_ctrl_none) + fully-pipelined (II=1) configuration. A LUT is ordinary
+// combinational/ROM logic with no hidden pipeline state, so it can't exhibit
+// that failure mode; its own error is instead a small, bounded, and known
+// quantity from table quantization (see gen_sincos_lut.ps1 for the sizing).
+#define LUT_SIZE 256  // entries per table; linear-interpolated between them
+// Holds a table position: integer part 0..LUT_SIZE-1 selects the LUT entry,
+// fractional part is the interpolation weight to the next entry.
+typedef ap_fixed<24, 10> phase_pos_t;
 
 // SOQPSK-TG parameters
 #define L 8         // Because the energy of one bit needs to last for L=8 cycles
