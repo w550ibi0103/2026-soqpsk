@@ -4,7 +4,7 @@
 
 //  --- *********************************** Important *********************************** ---
 //  --- Only for debugging during C simulation, comment out this line if release IP ---
-#define HW_DEBUG_MODE
+// #define HW_DEBUG_MODE
 //  --- *********************************** Important *********************************** ---
 
 // Vitis HLS libraries for fixed-point arithmetic and math functions
