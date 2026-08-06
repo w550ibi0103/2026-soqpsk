@@ -14,7 +14,7 @@ Note.md 第 49 節踩過的坑);以及少數留作參考用的歷史產物(如 `
 
 | Testbench | 測的 RTL | 驅動腳本 | 對比的 golden | 狀態 |
 |---|---|---|---|---|
-| `tb_xsim_top_sps16_default_coldstart.sv` | `hls_prj/solution1`(**真實設計**, cold_start 已套用, 無 debug port) | 手動編譯(無 `.sh`) | `hls_prj/solution1/csim/build/output_waveform.csv` | **目前現行**——2026-08-06, 1024 樣本逐位元吻合(Note.md 第 45 節), 之後 Q1.15/512-entry LUT 改動(Note.md 第 49 節)也是用這支重新驗證的 |
+| `tb_xsim_top_sps8_default_coldstart.sv` | `hls_prj/solution1`(**真實設計**, cold_start 已套用, 無 debug port) | 手動編譯(無 `.sh`) | `hls_prj/solution1/csim/build/output_waveform.csv` | **目前現行**——2026-08-06, 1024 樣本逐位元吻合(Note.md 第 45 節), 之後 Q1.15/512-entry LUT 改動(第 49 節)、`sps_sel` 重新對照+改名(第 52 節)都是用這支(改名前叫 `tb_xsim_top_sps16_default_coldstart.sv`)重新驗證的 |
 | `tb_xsim_top_sps16_default.sv` | `hls_prj/solution1`(真實設計, CORDIC 版, 舊介面含 debug port) | `scripts/run_xsim_verify_sps16.sh` | `hls_prj/solution1/csim/build/output_waveform.csv` | 歷史——2026-07-23, 被上面的 `_coldstart` 版取代 |
 | `tb_xsim_top.sv` | `hls_prj/solution1`(真實設計, CORDIC 版, 舊介面含 debug port) | `scripts/run_xsim_verify.sh` | `hls_prj/solution1/csim/build/output_waveform.csv` | 歷史——用來展示 `sps_sel` AXI4-Lite write race(Note.md 第 24 節), 預期會發散, 不是「應該要過」的測試 |
 

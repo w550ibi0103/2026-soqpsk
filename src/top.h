@@ -54,9 +54,11 @@ typedef ap_fixed<24, 10> phase_pos_t;
 
 // Dynamic SPS selection (see README item 9/11): sps_sel picks which precomputed
 // g_coeffs table and upsampling factor is active.
-//   sps_sel = 0 -> SPS=16, 1 -> SPS=8, 2 -> SPS=4
-//   sps_sel = 3 is reserved (SPS=2 was removed 2026-07-09: not enough oversampling
-//   margin for symbol timing recovery) and falls back to SPS=16, same as sps_sel=0.
+//   sps_sel = 0 -> SPS=8, 1 -> SPS=16
+//   sps_sel = 2/3 are reserved/unused (SPS=4 removed 2026-08-06, see Note.md;
+//   SPS=32 deferred for later) and fall back to SPS=16, same as sps_sel=1.
+//   sps_sel stays ap_uint<2> so codes 2/3 are ready for future expansion
+//   without widening the AXI4-Lite register.
 // Only change sps_sel while ap_rst_n is asserted; switching mid-stream is not
 // glitch-free (shift_reg/current_phase are not re-aligned to the new rate).
 

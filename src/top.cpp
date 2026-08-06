@@ -16,16 +16,11 @@ static const data_t g_coeff_sps16[G_LEN_MAX] = {
 static const data_t g_coeff_sps8[G_LEN_MAX] = {
 	#include "g_coeffs_sps8.inc"
 };
-static const data_t g_coeff_sps4[G_LEN_MAX] = {
-	#include "g_coeffs_sps4.inc"
-};
 
-// Phase increment scale = pi / active_sps, indexed by sps_sel (0->16, 1->8, 2->4).
-// sps_sel==3 is reserved (SPS=2 removed) and is clamped to index 0 before use.
-static const data_t PHASE_SCALE[3] = {
-	(data_t)(3.1415926535 / 16.0),
+// Phase increment scale = pi / active_sps, indexed by phase_idx (0->8, 1->16).
+static const data_t PHASE_SCALE[2] = {
 	(data_t)(3.1415926535 / 8.0),
-	(data_t)(3.1415926535 / 4.0)
+	(data_t)(3.1415926535 / 16.0)
 };
 
 // Sin/Cos lookup tables (see top.h and gen_sincos_lut.ps1). Entry i covers
@@ -113,7 +108,6 @@ void tfm_modulator(
 	// Ensure each g_coeff table is fully partitioned for parallel MAC access
 	#pragma HLS ARRAY_PARTITION variable=g_coeff_sps16 complete dim=1
 	#pragma HLS ARRAY_PARTITION variable=g_coeff_sps8  complete dim=1
-	#pragma HLS ARRAY_PARTITION variable=g_coeff_sps4  complete dim=1
 
 	static data_t current_phase = 0;  // data_t is 16-bit length, 4-bit integer part
 
@@ -126,9 +120,9 @@ void tfm_modulator(
 	// each of these must be `static` to survive from one loop pass to the next.
 	// =====================================================================
 	static int iter_in_byte = 0;         // sample index within the current byte (0 .. active_sps*8-1)
-	static int shift_amt = 4;            // log2(active_sps), latched once per byte
-	static int active_sps = 16;          // 1 << shift_amt, latched once per byte
-	static ap_uint<2> phase_idx = 0;     // PHASE_SCALE index, latched once per byte (sps_sel==3 clamped to 0)
+	static int shift_amt = 3;            // log2(active_sps), latched once per byte
+	static int active_sps = 8;           // 1 << shift_amt, latched once per byte
+	static ap_uint<2> phase_idx = 0;     // PHASE_SCALE index, latched once per byte
 	static uint8_t current_byte = 0;     // latched once per byte
 	static bool is_burst_end = false;    // latched once per byte
 	static bool idle_mode = true;        // latched once per byte
@@ -170,9 +164,10 @@ void tfm_modulator(
 		if (iter_in_byte == 0) {
 			// Decode the runtime SPS selection (see top.h for encoding).
 			switch (sps_sel) {
-				case 1:  shift_amt = 3; phase_idx = 1; break;  // SPS=8
-				case 2:  shift_amt = 2; phase_idx = 2; break;  // SPS=4
-				default: shift_amt = 4; phase_idx = 0; break;  // SPS=16 (also covers reserved sps_sel==3)
+				// sps_sel==0 is the ap_rst_n reset default -> SPS=8 is what this
+				// IP runs at out of reset, before any AXI4-Lite write.
+				case 0:  shift_amt = 3; phase_idx = 0; break;  // SPS=8 (reset default)
+				default: shift_amt = 4; phase_idx = 1; break;  // SPS=16 (sps_sel==1, plus reserved/unused sps_sel==2/3)
 			}
 			active_sps = 1 << shift_amt;
 
@@ -316,9 +311,8 @@ void tfm_modulator(
 			#pragma HLS UNROLL
 			data_t coeff;
 			switch (sps_sel) {
-				case 1:  coeff = g_coeff_sps8[j];  break;
-				case 2:  coeff = g_coeff_sps4[j];  break;
-				default: coeff = g_coeff_sps16[j]; break;  // also covers reserved sps_sel==3
+				case 0:  coeff = g_coeff_sps8[j];  break;   // reset default
+				default: coeff = g_coeff_sps16[j]; break;  // sps_sel==1, plus reserved/unused sps_sel==2/3
 			}
 			data_t contribution;
 			if (shift_reg[j] == (data_t)0)     contribution = (data_t)0;

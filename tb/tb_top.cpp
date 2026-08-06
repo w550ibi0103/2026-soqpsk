@@ -65,16 +65,17 @@ int main() {
 	// No explicit reset call is needed: the static state's C++ initializers already
 	// give the correct power-on values, matching what ap_rst_n would do in hardware.
 	// TEST_SPS_SEL can be overridden at compile time (-DTEST_SPS_SEL=N) to csim the
-	// other sps_sel branches; defaults to 0 (SPS=16) which matches the g(t) test data.
-	// Only 0/1/2 are valid (SPS=2, sps_sel==3, was removed 2026-07-09).
+	// other sps_sel branch; defaults to 0 (SPS=8, the ap_rst_n reset default).
+	// Only 0/1 are valid (2/3 are reserved/unused, both fall back to SPS=16 same
+	// as sps_sel==1 -- see top.h; SPS=4 removed 2026-08-06).
 	#ifndef TEST_SPS_SEL
 	#define TEST_SPS_SEL 0
 	#endif
-	#if TEST_SPS_SEL > 2
-	#error "TEST_SPS_SEL must be 0, 1, or 2 (SPS=2 / sps_sel==3 was removed)"
+	#if TEST_SPS_SEL > 1
+	#error "TEST_SPS_SEL must be 0 or 1 (sps_sel==2/3 are reserved/unused, both fall back to SPS=16 same as sps_sel==1)"
 	#endif
 	const ap_uint<2> sps_sel = TEST_SPS_SEL;
-	const int SPS_TABLE[3] = {16, 8, 4};
+	const int SPS_TABLE[2] = {8, 16};
 	const int SPS = SPS_TABLE[TEST_SPS_SEL];  // used only to size the debug drain below
 
 	tfm_modulator(bit_in, sps_sel, i_out, q_out

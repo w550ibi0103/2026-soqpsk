@@ -77,6 +77,11 @@ xsim_verify/xsim.dir/
 xsim_verify/*.wdb
 xsim_verify/*.pb
 xsim_verify/*.csv
+# LUT ROM $readmemh init files copied from hls_prj/solution1/syn/verilog/ --
+# meaningless without their .v companion, which is never tracked either
+# (hls_prj/ is fully git-ignored); filename isn't even stable across
+# csynth_design runs, see Note.md section 53
+xsim_verify/*.dat
 vitis_hls.log
 
 #  IP package
