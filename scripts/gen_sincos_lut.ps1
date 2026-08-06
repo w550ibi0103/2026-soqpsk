@@ -7,14 +7,17 @@
 # Table spans phase in [-pi, pi) in LutSize equal steps, matching current_phase's
 # wrap range in top.cpp. Entry i = f(-pi + i * (2*pi/LutSize)).
 #
-# 256 entries + linear interpolation was sized so the table's own quantization
-# error stays well under 1 LSB of data_t (ap_fixed<16,4>, 12 fractional bits,
-# LSB ~= 2.44e-4 rad): interpolation error ~= step^2/8, which for N=256 is
-# ~7.5e-5 (~0.3 LSB).
+# 512 entries + linear interpolation was sized so the table's own interpolation
+# error stays under 1 LSB of dac_q15_t (ap_fixed<16,1>, Q1.15, 15 fractional
+# bits, LSB ~= 3.05e-5): interpolation error ~= step^2/8, which for N=512 is
+# ~1.9e-5 (~0.6 LSB). (Originally 256 entries sized against data_t's coarser
+# 12-bit fraction -- bumped to 512 when COS_LUT/SIN_LUT storage moved from
+# data_t/Q4.12 to dac_q15_t/Q1.15, see Note.md, so interpolation error doesn't
+# become the dominant error term at the finer storage precision.)
 #
 # Usage: powershell -File scripts\gen_sincos_lut.ps1
 param(
-    [int]$LutSize = 256,
+    [int]$LutSize = 512,
     [string]$OutDir = "$PSScriptRoot\..\src"
 )
 

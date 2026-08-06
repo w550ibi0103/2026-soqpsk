@@ -17,7 +17,22 @@
 // Range is -128 to +127.99..., resolution is 2^-16 (~0.000015)
 // Fixed-point type definition: 16-bit word length, 4-bit integer part
 // Range is -8 to +7.99..., resolution is 2^-12 (~0.000244)
+// Used for phase/alpha/freq_dev/shift_reg/g_coeff: these need the 3 extra
+// integer-bit headroom (current_phase ranges +-pi, FIR accumulation, etc.)
 typedef ap_fixed<16, 4> data_t;
+
+// Fixed-point type definition: 16-bit word length, 1-bit integer part (sign only)
+// Range is -1 to +0.999969..., resolution is 2^-15 (~0.0000305) -- Q1.15,
+// matching tx_adrv9009_tpl_core/JESD204 DAC's full-scale-normalized sample
+// format (MSB = sign, 15 fractional bits, +-1.0 = DAC full scale). Used only
+// for COS_LUT/SIN_LUT storage and the final cos_val/sin_val output stage,
+// which are mathematically bounded to [-1,+1] and never need data_t's extra
+// integer headroom -- storing them directly in Q1.15 keeps the full 15-bit
+// fractional precision instead of quantizing to data_t's 12 fractional bits
+// first and only then rescaling (see Note.md). AP_SAT clamps the LUT's exact
+// +1.0 entry (cos(0)) down to +0.999969 instead of wrapping to -1.0; AP_RND
+// rounds instead of truncating on the interpolation multiply.
+typedef ap_fixed<16, 1, AP_RND, AP_SAT> dac_q15_t;
 
 // --- Sin/Cos lookup table (replaces hls::sin/hls::cos, see Note.md "CORDIC
 // 發散問題調查"): hls::sin/hls::cos (hls_math.h, CORDIC-based) was confirmed
@@ -27,7 +42,7 @@ typedef ap_fixed<16, 4> data_t;
 // combinational/ROM logic with no hidden pipeline state, so it can't exhibit
 // that failure mode; its own error is instead a small, bounded, and known
 // quantity from table quantization (see gen_sincos_lut.ps1 for the sizing).
-#define LUT_SIZE 256  // entries per table; linear-interpolated between them
+#define LUT_SIZE 512  // entries per table; linear-interpolated between them
 // Holds a table position: integer part 0..LUT_SIZE-1 selects the LUT entry,
 // fractional part is the interpolation weight to the next entry.
 typedef ap_fixed<24, 10> phase_pos_t;

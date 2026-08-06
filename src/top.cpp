@@ -30,10 +30,15 @@ static const data_t PHASE_SCALE[3] = {
 
 // Sin/Cos lookup tables (see top.h and gen_sincos_lut.ps1). Entry i covers
 // phase = -pi + i*(2*pi/LUT_SIZE), matching current_phase's wrap range below.
-static const data_t SIN_LUT[LUT_SIZE] = {
+// Stored directly in dac_q15_t (Q1.15, see top.h) instead of data_t: values
+// are bounded to [-1,+1] and this is also the final DAC output format, so
+// storing at full 15-bit fractional precision here (rather than data_t's
+// 12-bit fraction, later rescaled) avoids losing precision that the .inc
+// files' full-double-precision literals actually have available.
+static const dac_q15_t SIN_LUT[LUT_SIZE] = {
 	#include "sin_lut.inc"
 };
-static const data_t COS_LUT[LUT_SIZE] = {
+static const dac_q15_t COS_LUT[LUT_SIZE] = {
 	#include "cos_lut.inc"
 };
 
@@ -337,18 +342,22 @@ void tfm_modulator(
 		// --- Output Formatting & TLAST Propagation ---
 		sample_pkt out_i, out_q;
 
-		// Sin/Cos via 256-entry linear-interpolated LUT (replaces hls::cos/hls::sin,
-		// see top.h comment). lut_idx1 = lut_idx0+1 wraps 255->0 for free via 8-bit
-		// unsigned overflow, which is correct: entry 0 (phase=-pi) and the implicit
-		// entry LUT_SIZE (phase=+pi) are the same point on the unit circle.
+		// Sin/Cos via LUT_SIZE-entry linear-interpolated LUT (replaces hls::cos/hls::sin,
+		// see top.h comment). lut_idx1 = lut_idx0+1 wraps (LUT_SIZE-1)->0 for free via
+		// 9-bit unsigned overflow (LUT_SIZE=512 needs 9 bits, not 8 -- see Note.md,
+		// this was originally sized for the old 256-entry table), which is correct:
+		// entry 0 (phase=-pi) and the implicit entry LUT_SIZE (phase=+pi) are the
+		// same point on the unit circle.
 		phase_pos_t phase_pos = ((phase_pos_t)current_phase + (phase_pos_t)3.1415926535) * LUT_POS_SCALE;
-		ap_uint<8> lut_idx0 = (ap_uint<8>)phase_pos;
-		ap_uint<8> lut_idx1 = lut_idx0 + 1;
+		ap_uint<9> lut_idx0 = (ap_uint<9>)phase_pos;
+		ap_uint<9> lut_idx1 = lut_idx0 + 1;
 		data_t lut_frac = (data_t)(phase_pos - (phase_pos_t)lut_idx0);
 
-		data_t cos_val = COS_LUT[lut_idx0] + (data_t)(lut_frac * (COS_LUT[lut_idx1] - COS_LUT[lut_idx0]));
-		data_t sin_val = SIN_LUT[lut_idx0] + (data_t)(lut_frac * (SIN_LUT[lut_idx1] - SIN_LUT[lut_idx0]));
+		dac_q15_t cos_val = COS_LUT[lut_idx0] + (dac_q15_t)(lut_frac * (COS_LUT[lut_idx1] - COS_LUT[lut_idx0]));
+		dac_q15_t sin_val = SIN_LUT[lut_idx0] + (dac_q15_t)(lut_frac * (SIN_LUT[lut_idx1] - SIN_LUT[lut_idx0]));
 
+		// cos_val/sin_val are already native Q1.15 (dac_q15_t): raw bits are
+		// the DAC's expected format directly, no separate rescale needed.
 		out_i.data = cos_val.range(15, 0);
 		out_q.data = sin_val.range(15, 0);
 

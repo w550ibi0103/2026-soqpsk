@@ -107,17 +107,22 @@ int main() {
 		sample_pkt q_pkt = q_out.read();
 
 		// Convert the raw 16-bit integer back to floating point for verification
-		// Reinterpret the raw bits as our ap_fixed<16,4> data_t
-		data_t i_val; i_val.range(15,0) = i_pkt.data;
-		data_t q_val; q_val.range(15,0) = q_pkt.data;
+		// Reinterpret the raw bits as our ap_fixed<16,1,AP_RND,AP_SAT> dac_q15_t
+		// (Q1.15 -- matches tx_adrv9009_tpl_core's DAC sample format, see Note.md)
+		dac_q15_t i_val; i_val.range(15,0) = i_pkt.data;
+		dac_q15_t q_val; q_val.range(15,0) = q_pkt.data;
 
 		outfile << sample_idx << ","
 				<< i_val.to_double() << ","
 				<< q_val.to_double() << ","
 				<< i_pkt.last << std::endl;
 
-		// Simple check: Output should not exceed unit circle significantly
-		if (i_val.to_double() > 1.2 || i_val.to_double() < -1.2) {
+		// Simple check: Output should not exceed unit circle significantly.
+		// Bound tightened to dac_q15_t's actual representable range (Q1.15,
+		// saturates at [-1.0, +0.999969], see top.h) -- the old +-1.2 bound
+		// was sized for data_t's wider Q4.12 range and could never fire once
+		// the output type moved to dac_q15_t (Note.md section 49).
+		if (i_val.to_double() > 1.00003 || i_val.to_double() < -1.00003) {
 			pass = false;
 		}
 

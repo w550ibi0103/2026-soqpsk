@@ -438,3 +438,46 @@ handshake 完成後又多等一拍才放 `TVALID`——如果 DUT 這邊的 `reg
   - 是標準完整的 Vivado IP Catalog 封裝, 第 21 節記錄過的匯入步驟(解壓縮到 `ip_repo/` → `Settings → IP → Repository → Add Repository` → 在 Catalog 搜尋 `tfm_modulator`)可以直接照做.
 - **檔名已加上版本號**:使用者對版本號命名沒有特定想法, 交給我決定. 改成 `tfm_modulator_v1.0_20260806.zip`(`hls_prj/solution1/impl/` 底下), 版本號 `v1.0` 跟 `component.xml` 裡 Vitis HLS 自己寫的 `<spirit:version>1.0</spirit:version>` 對齊, 後面加日期(打包當天, 2026-08-06)方便跟未來重新 export 的版本區分. 之後如果內容有變(例如改 `sps_sel` 行為、換 `dac_data` 打包邏輯等), 版本號或日期要跟著換, 不要沿用同一個檔名覆蓋.
 - **本次(2026-08-05/06)全部討論的總結**:`HW_DEBUG_MODE` 關閉 → 封裝來源確認(`hls_prj/solution1`)→ cold_start 原理釐清 → 差分編碼自癒特性推導 → 開機時序與 ADRV9009 `link_clk`/CDC 議題 → cold_start 正式套用 `src/top.cpp` 並四層驗證(csim/csynth/RTL-vs-golden/真實 P&R)全過 → IP 打包完成. `dac_data` 打包/CDC 轉接 IP(第 44 節)仍是待辦, 屬於同事的 ADRV9009 對接範疇.
+
+## 49. `i_out`/`q_out` 輸出格式改成原生 Q1.15(`dac_q15_t`), LUT 512-entry, RTL-vs-golden 重新驗證通過(2026-08-06)
+使用者釐清 `tx_adrv9009_tpl_core` 吃的 DAC 樣本格式是 Q1.15(1-bit MSB 符號 + 15-bit 小數, 滿量程 `±1.0`, 見第 12 節), 而 `src/top.cpp` 原本 `out_i.data = cos_val.range(15,0)` 直接搬 `data_t`(`ap_fixed<16,4>`, Q4.12)的 raw bits, 兩者小數點位置差 3 bit. 使用者接著要求「不想浪費任何一點精度」, 決定連 `cos_lut.inc`/`sin_lut.inc` 的儲存精度也一併檢討.
+
+- **根因**:`data_t`(Q4.12)本來是為 `current_phase`(需要 `±pi` 的整數位 headroom)、`freq_dev`/`alpha`/`shift_reg`/`g_coeff` 這些會累加、需要留headroom的訊號設計的, 但 `COS_LUT`/`SIN_LUT`/`cos_val`/`sin_val` 值域保證在 `[-1,+1]`, 從沒用到那 3 個多出來的整數位, 存成 Q4.12 等於平白把 `cos_lut.inc`/`sin_lut.inc`(`scripts/gen_sincos_lut.ps1` 用 `.ToString('R')` 寫出完整 double precision, 檔案本身沒有量化)的精度截斷到只剩 12-bit 小數, 而不是能用的 15-bit.
+- **改動**:
+  1. `src/top.h` 新增 `typedef ap_fixed<16, 1, AP_RND, AP_SAT> dac_q15_t;`(Q1.15, `AP_SAT` 避免 LUT 裡剛好等於 `1.0` 的那筆項(`cos(0)`, 原本 256-entry 版在 index 128, 512-entry 版在 index 256)wrap 成 `-1.0`; `AP_RND` 內插乘法捨入而非純截斷), `data_t` 維持不動(其他訊號仍需要它的整數位 headroom).
+  2. `src/top.cpp`:`COS_LUT`/`SIN_LUT`/`cos_val`/`sin_val` 全部從 `data_t` 換成 `dac_q15_t`, 輸出那行不再需要額外轉型(`cos_val.range(15,0)` 已經原生是 Q1.15).
+  3. `LUT_SIZE` 256→512(`src/top.h`):原本 256-entry 的內插近似誤差(`~7.5e-5`)是設計成小於 Q4.12 的 1 LSB(`2.44e-4`); 換成 Q1.15(1 LSB `~3.05e-5`)後, 內插誤差反而變成主導項(約 2.5 個新 LSB), 所以把 `LUT_SIZE` 一併拉到 512(內插誤差降到 `~1.9e-5`, 壓到新 LSB 以下), `scripts/gen_sincos_lut.ps1` 預設值跟著改, 重新產生 `.inc` 檔.
+  4. `tb/tb_top.cpp:111-112` golden CSV 重建那段, `data_t i_val; i_val.range(15,0)=...` 改成 `dac_q15_t`, 否則 golden 本身會照舊 Q4.12 除法算錯(bug, 不是等效轉換).
+  5. `xsim_verify/tb_xsim_top_sps16_default_coldstart.sv:137-138`, `i_val = $signed(...) / 4096.0` 改成 `/ 32768.0`(Q1.15, 不是 Q4.12).
+- **驗證過程中抓到兩個真的 bug, 都跟這次改動直接相關**:
+  1. **`lut_idx0`/`lut_idx1` 忘記跟著加寬**(`src/top.cpp:352-353`):`LUT_SIZE` 改 512 後索引需要 9-bit, 但宣告還停在 `ap_uint<8>`(0-255), 造成 table 上半部(index 256-511)被 8-bit 截斷/alias 回下半部, 連 `csim_design`(golden 本身)都被這個 bug 污染, 不只 RTL. 改成 `ap_uint<9>` 後 csim `TEST PASSED` 依舊, 但 golden 數值本身也跟著變了(idle carrier 從錯的值變成正確的 `(0.999969,-0.000061)`, 接近 `cos(0)=1,sin(0)=0` 飽和後的值).
+  2. **`xsim_verify/` 底下殘留舊的 LUT ROM `.dat` 檔案蓋過新的**:`ad_ip` 這條路徑無關, 是 HLS 自己產生的 `tfm_modulator_tfm_modulator_Pipeline_BYTE_LOOP_{COS,SIN}_LUT_ROM_AUTO_1R.v` 裡 `$readmemh("./tfm_modulator_..._ROM_AUTO_1R.dat", rom0)` 用的是**相對於 xsim 執行目錄(`xsim_verify/`)的相對路徑**, 而 `xsim_verify/` 底下剛好殘留一份 2026-07-29(256-entry Q4.12 版)的同名 `.dat`(1536 bytes, 新版應該是 3072 bytes), 把 `hls_prj/solution1/syn/verilog/` 剛產生的新內容整個蓋掉——RTL 邏輯(索引/位寬)完全正確, 但吃到錯的 ROM 內容, 症狀是 I/Q 幅度長期卡在 `[-0.5,+0.5]` 附近, 完全不像 `cos`/`sin`. **教訓**:之後每次 `csynth_design` 重新產生 RTL 後, 手動跑 `xvlog`/`xelab`/`xsim` 前, 除了 `.v` 檔, 記得把 `hls_prj/.../syn/verilog/*.dat`(LUT/ROM 記憶體初始檔)也同步複製一份到 `xsim_verify/`, 覆蓋掉舊的, 否則 `$readmemh` 的相對路徑會撿到 stale 檔案, 而且症狀看起來很像設計本身有 bug, 容易誤判方向. 已把 `xsim_verify/` 裡兩個沒有 `_Pipeline_BYTE_LOOP_` 中綴的更舊孤兒 `.dat`(對應不到目前任何 `.v`)一併刪除, 避免以後又混淆.
+- **結果**(兩個 bug 都修完後):
+  - `csim_design`:`TEST PASSED`, 1024 samples, 0 errors.
+  - `csynth_design`:`Target II=1, Final II=1, Depth=16`(比第 45 節的 `Depth=15` 多 1 級, 是 `AP_RND`/`AP_SAT` 的捨入/飽和邏輯多吃一級 pipeline, 預期之內), `Estimated Fmax=220.51MHz`(跟第 45 節數字相同, 沒有時序代價).
+  - **RTL 對 golden 逐點比對**(`hls_prj/solution1/csim/build/output_waveform.csv` vs 重新編譯的 `xsim_verify/tb_xsim_top_sps16_default_coldstart.sv` 輸出):golden 1024 samples, RTL 捕捉到 2026 samples(RTL 是真正 free-running, 會持續輸出 idle carrier 超過 golden 因為 `CSIM_MAX_ITERS` 提早結束的範圍, 屬於預期行為, 只比較前 1024 筆), **1024/1024 全部落在 `1e-4` 容忍度內, 最大誤差 `0.0000005`(約 0.016 個 Q1.15 LSB), TLAST 0 個不一致**, 精度量級比第 45 節(`0.000001`, Q4.12 時代)更細, 符合預期(Q1.15 LSB 本來就比 Q4.12 小 8 倍).
+- **結論**:輸出格式(`out_i`/`out_q`)現在原生就是 `tx_adrv9009_tpl_core` 要的 Q1.15, `cos_lut.inc`/`sin_lut.inc` 裡的完整精度不再被提前截斷到 12-bit. `data_t`/phase accumulator/FIR 完全沒有被動到, 三層驗證(csim/csynth/RTL-vs-golden)全過. **`export_design` 這次沒有重新跑**(這是功能性改動, 舊的 `tfm_modulator_v1.0_20260806.zip` 輸出格式是錯的 Q4.12, 之後要重新封裝發新版本號的 zip, 留給使用者確認時機). 32-bit `dac_data` packing(第 12/13/44 節)仍是待辦.
+
+## 50. `verify_tmp/` 分支已刪除(2026-08-06)
+使用者確認 `verify_tmp/`(第 43-45 節、`verify_tmp/README.md` 記錄的 cosim 繞路實驗分支)已經過時, 要求連同相關 testbench/腳本一併刪除.
+
+- **理由**:`verify_tmp/` 存在的兩個目的(繞過 `cosim_design` 對 `ap_ctrl_none`+`sps_sel` 組合的拒絕、加 debug port 挖 RTL 內部訊號)都是為了 cold_start 那輪除錯. cold_start 已經在 2026-08-06(第 45 節)正式搬回 `src/top.cpp` 並完成四層驗證, 今天(第 49 節)Q1.15/512-entry 那輪改動也證實 `src/`+`tb/` 自己就能走完「csim + csynth + 手寫 `.sv` 對 golden 逐點比對」這條完整驗證路, 不再需要 `verify_tmp/` 這個沙盒.
+- **刪除範圍**:
+  - `verify_tmp/` 整個目錄(11 個檔案:`README.md`、3 支 `.tcl`、`src/*.cpp`/`*.h`/4 個 `.inc`、`tb/tb_top.cpp`)
+  - `xsim_verify/tb_xsim_verify_sps8.sv`、`xsim_verify/tb_xsim_verify_sps8_lut.sv`(唯二測 `hls_prj_verify` 的 testbench)、`scripts/run_xsim_verify_sps8_clean.sh`(驅動前者的腳本)
+  - `xsim_verify/dut_full_dump.vcd`/`xsim_vcd_dump.tcl`/`alpha_stream_from_vcd.csv`(第 33 節記錄過的 VCD dump-and-parse 繞路方法, 早被 `debug_alpha_stream` port 取代, 且只在 `verify_tmp/` 才有意義)
+  - `hls_prj_verify/`(git-ignored build 產物)+ 一批只跟 `verify_tmp`/sps8 驗證有關、本來就沒進 git 的 golden/debug CSV 與 `.wdb`
+  - **刻意保留**:`scripts/check_cosim_reject.tcl`(測的是 `hls_prj` 真實設計, 跟 `verify_tmp/` 無關, 只是概念上在確認同一個 `cosim_design` 工具限制); `tb_xsim_top.sv`/`tb_xsim_top_sps16_default.sv`(測真實設計, 只是被 `_coldstart` 版取代的歷史版本, 跟 `verify_tmp/` 無關); Note.md 裡第 25-45 節記錄 `verify_tmp/` 帶出的除錯過程(CORDIC 發散根因、cold_start 根因定位)——這些是決策/除錯歷程紀錄, 跟程式碼是否還在無關, 刻意不刪.
+- **文件同步**:`xsim_verify/README.md`(移除表格裡兩列 + `hls_prj_verify/ 是什麼` 段落 + VCD dump/`golden_expected_nonzero_pulses.csv` 條目, 開頭那句 `cosim_design` 限制的敘述改成不依賴 `verify_tmp/README.md` 的自我完整說明)、`scripts/README.md`(移除 `run_xsim_verify_sps8_clean.sh` 條目)都已更新, 不留 dangling reference.
+- **未做的事**:這次只刪檔案跟改文件, 沒有 `git commit`——改動都還在 working tree, 留給使用者自己確認後決定要不要一起 commit.
+
+## 51. 重新 export IP, 版本號升到 v1.1(2026-08-06)
+刪除 `verify_tmp/` 後, 使用者要求確認 `scripts/run_hls.tcl`(`src/`+`tb/` 這條正式路)還能不能正常跑完, 順便把 `export_design` 的輸出重新命名成新版本.
+
+- **驗證**:`echo "exit" | vitis_hls.bat -f scripts/run_hls.tcl` 完整跑一次(`csim_design`+`csynth_design`+`export_design`), 乾淨結束, 沒有卡在互動提示字元. 結果跟第 49 節一致:`TEST PASSED`、`II=1`、`Depth=16`、`Estimated Fmax=220.51MHz`. 證實 `verify_tmp/` 從來不是 `src/`/`tb/`/`scripts/run_hls.tcl` 的依賴, 刪除它沒有任何副作用.
+- **重新命名**:`hls_prj/solution1/impl/export.zip` 複製一份成 `tfm_modulator_v1.1_20260806.zip`(沿用第 48 節的命名慣例, `hls_prj/` 是 git-ignored, 版本號只存在檔名裡)。從 `v1.0` 升到 `v1.1` 是因為第 49 節的 Q1.15 輸出格式改動是**功能性**改動(舊 `v1.0_20260806.zip` 的 `dac_data`/`i_out`/`q_out` 是錯的 Q4.12 格式), 不是單純重新打包. 舊的 `v1.0_20260806.zip` 這次 `open_project -reset` 已經連同整個 `hls_prj/` 一起被清掉, 不在硬碟上, 無法保留對照, 但 git 沒有追蹤 `hls_prj/`, 也沒有留存需求.
+- **介面確認**(使用者提問, 直接讀 `hls_prj/solution1/syn/verilog/tfm_modulator.v` 的 module port list 確認, 不是猜的):
+  - `bit_in`:完整 AXI-Stream(`TDATA`/`TVALID`/`TREADY`/`TKEEP`/`TSTRB`/`TLAST`), 輸入.
+  - `i_out`/`q_out`:各自完整 AXI-Stream(同一組六個訊號), 輸出, 兩個都是.
+  - `ap_clk`/`ap_rst_n`:都有拉出來當獨立 top-level port(不是包在 AXI-Stream 裡). `ap_rst_n` 是**同步、低電位有效**(`WARNING: [RTGEN 206-101] Design contains AXI ports. Reset is fixed to synchronous and active low.`), RTL 內部用 `ap_rst_n_inv` 反相後接給子模組的 `ARESET`/`ap_rst`.
+  - `sps_sel`:走獨立的 `s_axi_CTRL`(AXI4-Lite), 不是 AXI-Stream, 也不是 `bit_in`/`i_out`/`q_out` 那三條的一部分.
