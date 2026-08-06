@@ -20,8 +20,17 @@
 
 1. **第一條路:C 模擬(`csim_design`, 跟 RTL 完全無關)**——把 `top.cpp` 當一般 C++ 程式編譯、跟 `tb_top.cpp` 連結執行. 這裡完全沒有 RTL、沒有時脈、沒有 SystemVerilog testbench 的影子, 純軟體函式呼叫, 產出 `hls_prj/solution1/csim/build/output_waveform.csv`, 這份 CSV 就是後面拿來當比對基準的 **golden**.
 2. **第二條路:合成(`csynth_design`, 把 C++ 變成電路圖, 一樣不涉及模擬)**——把 `top.cpp` 轉成 Verilog/VHDL, 寫到 `hls_prj/solution1/syn/verilog/`. 這一步也不執行任何模擬, 純粹是翻譯, 產出的是靜態的 `.v`/`.vhd` 檔案.
-3. **第三條路:RTL 模擬(手寫 SystemVerilog testbench + Vivado `xsim`, 完全獨立的工具鏈, 不是 Vitis HLS)**——`xsim_verify/` 底下的 `.sv` testbench 是事先手寫好的檔案, 裡面實體化(instantiate)的就是第 2 步產出的 RTL 模組. 執行時要靠 Vivado 三個工具接力(不是一個指令):`xvlog` 編譯 RTL + testbench → `xelab` 串接成可執行的模擬快照 → `xsim <快照> -tclbatch xsim_run.tcl` 才是真正**執行**模擬(`xsim_run.tcl` 只是三行 batch 指令: 記錄波形、跑到底、結束, 不是「把結果記錄下來」而已, 是驅動整個模擬真正跑起來的那個動作). 這一步跑完, testbench 自己的邏輯會寫出一份 `output_waveform_xsim_*.csv`, 是 RTL 實際跑出來的結果.
+3. **第三條路:RTL 模擬**——本來 Vitis HLS 有內建的 `cosim_design` 可以自動做這件事, 但這個專案的 IP 用不了, 只能改成手寫 testbench 走 Vivado 的 `xsim`. 兩種方式原理一樣(見下面「`cosim_design` 的原理」), 差在自動 vs 手動.
+   - **`cosim_design`(本專案用不了)**:自動產生一份 testbench, 重用 `csim_design` 記錄下來的「輸入/輸出」測試向量, 用 HLS 內建的 Bus-Functional Model(BFM)把它們翻譯成正確協定時序的訊號去驅動第 2 步的 RTL, 底層一樣是呼叫 xsim/ModelSim 之類的 RTL 模擬器(見「C/RTL Co-simulation 功能介紹」). 它靠 `ap_start`/`ap_done` 當同步錨點, 知道「這次函式呼叫從哪裡開始算到哪裡結束」. **這顆 IP 是 `ap_ctrl_none`(free-running, 沒有 `ap_start`/`ap_done`)+ `sps_sel` 這個 runtime `s_axilite` register, 讓自動生成的 BFM 完全沒有函式呼叫邊界可以當錨點**, 所以 `cosim_design` 會直接報錯拒絕(`non-self-synchronizing top I/O sps_sel`), 這是 Vitis HLS 2023.2 的工具限制, 不是設計錯誤.
+   - **手寫 SystemVerilog testbench + `xsim`(本專案實際用的路)**:`xsim_verify/` 底下的 `.sv` testbench 是事先手寫好的檔案, 裡面實體化(instantiate)的就是第 2 步產出的 RTL 模組, 手動把 `cosim_design` 自動做的事(驅動輸入、監看輸出)重新做一遍. 執行時要靠 Vivado 三個工具接力(不是一個指令):`xvlog` 編譯 RTL + testbench → `xelab` 串接成可執行的模擬快照 → `xsim <快照> -tclbatch xsim_run.tcl` 才是真正**執行**模擬(`xsim_run.tcl` 只是三行 batch 指令: 記錄波形、跑到底、結束, 不是「把結果記錄下來」而已, 是驅動整個模擬真正跑起來的那個動作). 這一步跑完, testbench 自己的邏輯會寫出一份 `output_waveform_xsim_*.csv`, 是 RTL 實際跑出來的結果.
 4. **比對(目前是人工做的, 沒有腳本自動化)**——拿步驟 3 的 CSV 跟步驟 1 的 golden CSV 逐點比對, 確認 RTL 行為跟 C model 一致. 完整的 testbench↔golden 對照見 `xsim_verify/README.md`.
+
+**這四步(不管 RTL 模擬是自動的 `cosim_design` 還是手寫的 `xsim`)驗證的只有「功能正確性」, 完全不驗證真實時序**:RTL 模擬器是事件驅動的邏輯模擬, 一個 clock edge 觸發後不管中間隔了幾層邏輯閘瞬間就算完, 完全沒有「這段邏輯在真實矽晶片上要花多少奈秒才能穩定」這個概念. 這個 clock cycle 該存什麼值算對了, 不代表真實硬體在目標時脈下真的來得及算完. `export_design` 本身不會檢查你有沒有做過任何時序驗證, 打包前要自己另外確認, 見下一點.
+
+5. **第五步(不是這三條路的一部分, 是額外補上的時序驗證層):真正的 `synth_design`+`place_design`+`route_design`+`report_timing_summary`**——`csynth_design` 的 Estimated 時序報告只是粗略估計(這個專案實測過, 可能跟真實差到 100 倍以上, 不能當真), 要知道目標時脈到底撐不撐得住, 只能拿第 2 步匯出的 RTL 直接跑一次真正的 Vivado 邏輯合成 + 佈局 + 繞線(out-of-context 合成, 不用等真的接進系統), 再用 `report_timing_summary` 產生報告.
+   - `report_timing_summary` 背後跑的是 **STA(Static Timing Analysis)**, 跟模擬(`cosim`/`xsim`)是完全不同性質的東西:模擬只能看到 testbench 剛好餵過的訊號切換組合, STA 是窮舉的圖論演算法, 把電路裡每一條暫存器對暫存器的路徑都算過一遍, 不是抽樣.
+   - 報告裡的 `WNS`(Worst Negative Slack)是所有路徑裡最緊的一條的餘裕, `TNS`(Total Negative Slack)是所有違規路徑的餘裕加總; 報告同時會列出 `TNS Total Endpoints`(這次分析總共檢查了幾個 timing endpoint). 只要 `WNS ≥ 0` 且 `TNS = 0`, 代表**這次分析範圍內的每一條路徑全部過關**, 不是只驗證了最緊的那一條.
+   - 要注意「分析範圍」這個前提:out-of-context 合成通常只完整涵蓋 IP 內部暫存器對暫存器的路徑, IP 邊界(外部真正接的是什麼)不一定有納入, 報告裡如果出現 `no_input_delay`/`no_output_delay` 這類警告就是在講這件事. 真正的蓋棺論定, 還是要在完整的系統 block design 裡再跑一次.
 
 ## C Simulation 功能介紹
 1. Launch Debugger: 編譯你的 C/C++ 程式碼與 Testbench, 但不會直接把程式跑完, 而是會自動切換到 Debug Perspective(除錯介面). 當你的 C Simulation 結果不如預期、發生當機(例如 Segmentation Fault), 或是你想確認某個變數在迴圈裡的值是如何變化的時候。你可以利用它來下斷點(Breakpoints)、單步執行(Step Over/Into)並即時監控變數.
