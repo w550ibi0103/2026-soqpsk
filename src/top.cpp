@@ -130,6 +130,19 @@ void tfm_modulator(
 	static data_t alpha = 0;             // holds current symbol's alpha value across active_sps samples
 	static int current_bit = 0;          // holds current bit value for debug output
 
+	// True until the very first real byte has been read. While true, BYTE_LOOP
+	// retries bit_in.read_nb() every single cycle (instead of only once per
+	// active_sps*8-cycle byte period) and keeps iter_in_byte pinned at 0, so a
+	// first-cycle-after-reset race with bit_in's AXI4-Stream register-slice
+	// settling (regslice_both is held/cleared for as long as ap_rst_n is low,
+	// so it needs at least one real post-release clock edge to reflect data
+	// that was already stable on its input) can't cause byte0 to be misread as
+	// idle and permanently offset all subsequent bytes by one whole byte.
+	// i_out/q_out still get written every cycle throughout (idle carrier,
+	// alpha=0) -- this only delays when the per-byte bookkeeping truly starts,
+	// it never withholds output.
+	static bool cold_start = true;
+
 	// C-sim-only counter to break the otherwise-infinite BYTE_LOOP below (see CSIM_MAX_ITERS).
 	#ifndef __SYNTHESIS__
 	static int csim_iter_count = 0;
@@ -165,6 +178,7 @@ void tfm_modulator(
 				current_byte = in_val.data;
 				is_burst_end = in_val.last;  // TRUE only on the final byte of the DMA burst
 				idle_mode = false;
+				cold_start = false;  // the very first real byte has now been captured
 			} else {
 				idle_mode = true;
 			}
@@ -177,9 +191,13 @@ void tfm_modulator(
 
 		// =============================================================
 		// Per-bit processing: Differential Encoder + SOQPSK Precoder
-		// Executes once every active_sps iterations (at the first sample of each bit)
+		// Executes once every active_sps iterations (at the first sample of each bit).
+		// Suppressed while still cold_start-retrying (s is pinned to 0 every
+		// cycle then, and we don't want the differential encoder/precoder
+		// state machine to churn once per retry attempt) -- it runs for the
+		// first time on the same cycle cold_start becomes false.
 		// =============================================================
-		if (s == 0) {
+		if (s == 0 && !cold_start) {
 			// Extract the current bit (LSB first) or use dummy data
 			if (idle_mode) {
 				current_bit = 0;  // Dummy data to maintain continuous RF carrier phase
@@ -353,7 +371,13 @@ void tfm_modulator(
 		// Advance to the next sample, wrapping back to a new byte once
 		// active_sps*8 samples have been emitted for this one.
 		// =============================================================
-		if (iter_in_byte == active_sps * 8 - 1) {
+		if (cold_start) {
+			// Still waiting for the first real byte: keep iter_in_byte
+			// pinned at 0 so next cycle retries bit_in.read_nb() again.
+			// Deliberately does NOT touch csim_iter_count/break below --
+			// a cold_start retry is not a completed byte.
+			iter_in_byte = 0;
+		} else if (iter_in_byte == active_sps * 8 - 1) {
 			iter_in_byte = 0;
 
 			// C simulation cannot execute a truly infinite while(1); break once

@@ -51,6 +51,8 @@ Thumbs.db
 .apc/
 hls.app
 hls_prj/
+hls_prj_verify/
+hls_prj_debug_sps8/
 
 # editor's preference settings
 .settings/
@@ -75,7 +77,6 @@ xsim_verify/xsim.dir/
 xsim_verify/*.wdb
 xsim_verify/*.pb
 xsim_verify/*.csv
-xsim_verify/golden_sps8/hls_prj_verify/
 vitis_hls.log
 
 #  IP package

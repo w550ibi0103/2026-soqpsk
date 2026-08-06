@@ -49,4 +49,4 @@ csynth_design
 #cosim_design
 
 # Export the design as a Vivado IP Catalog package (.zip)
-#export_design -format ip_catalog -description "SOQPSK TFM Modulator IP" -vendor "user" -library "hls" -display_name "tfm_modulator"
+export_design -format ip_catalog -description "SOQPSK TFM Modulator IP" -vendor "user" -library "hls" -display_name "tfm_modulator"

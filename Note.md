@@ -380,3 +380,61 @@ handshake 完成後又多等一拍才放 `TVALID`——如果 DUT 這邊的 `reg
 - `DATA_PATH_WIDTH=2` × `link_clk`(250MHz)算出來的介面容量是 500 MSPS, 遠大於實際需要的 122.88/160 MSPS——這個第 16 節就標記過的「未解之謎」(是否每個 link_clk 都真的有新樣本, 還是有 hold/repeat)這次查原始碼沒有解開, 仍需要之後實際跑 `tx_fir_interpolator`/`tx_adrv9009_tpl_core` 的波形模擬才能確認.
 - **打包/CDC 這顆轉接 IP 完全還沒做**: 目前確認新的 block diagram 不會有 `tx_fir_interpolator`(DMA 直接餵 `tfm_modulator`, `tfm_modulator` 直接輸出), 中間需要一顆(可能是同事另外做的)IP 把 `i_out`/`q_out` 的 16-bit/1-sample-per-clock 資料, 經過 CDC(160MHz→250MHz)後打包成 `dac_data` 要的 32-bit/2-samples-per-clock 格式, 才能接 `tx_adrv9009_tpl_core`. **這顆 IP 目前完全不存在, 是待辦事項**——依 2026-07-23 的分工(第 155-157 行), 這屬於同事負責的「ADRV9009 對接與 resample」範疇, 但設計前務必先讓同事知道: (a) 這是 CDC + rate matching, 不是單純格式打包; (b) `link_clk` 不能改, 只能配合它設計; (c) 500MSPS 介面容量對實際取樣行為的疑問尚未透過模擬證實.
 - 這次(2026-07-27/28/29)新增的檔案都在 `xsim_verify/`(`tb_xsim_verify_sps8_lut.sv`、`xsim_vcd_dump.tcl`、`dut_full_dump.vcd`、各種 golden/rtl 比對用 CSV)與 `scripts/gen_sincos_lut.ps1`, 都保留下來方便之後參考. `verify_tmp/` 已加上 `debug_alpha_stream`/`debug_idle_stream`/`debug_current_bit_stream`(診斷用)跟 cold_start 修法(實驗性, 尚未套用到 `src/top.cpp`).
+
+## 45. cold_start 正式套用到 `src/top.cpp`, csim/csynth/RTL-vs-golden 三層驗證全過(2026-08-06)
+使用者決定不再等,直接把 cold_start 套進正式設計並重新驗證,IP 封裝暫緩到驗證結果出來後再議.
+
+- **套用內容**: 把第 41 節記錄的四處改動(`static bool cold_start = true;`、`read_nb()` 成功時清 `cold_start`、`if (s==0 && !cold_start)`、`iter_in_byte` 前進邏輯的 `if (cold_start) {...} else if (...)`)原封不動搬進 `src/top.cpp`(不是 `verify_tmp/`),邏輯跟 `verify_tmp/src/top.cpp` 一致.
+- **`csim_design`**(`hls_prj/solution1`, 走 `run_hls.tcl`):`TEST PASSED`, 1024 samples, 0 errors(SPS=16, `tb_top.cpp` 預設 `TEST_SPS_SEL=0`).
+- **`csynth_design`**:`BYTE_LOOP` 仍是 `achieved II=1`、`Depth=15`、`Trip Count=inf`、`Pipelined=yes`,`Estimated Fmax=220.51MHz`(160MHz 目標有餘裕)——cold_start 沒有時序代價這件事在正式設計上也成立. Top-level `tfm_modulator` 整體 slack 仍是razor-thin 的 0.02ns(舊版拿掉 debug port 前是 0.01ns),這是 CTRL wrapper 既有的特性,不是 cold_start 造成的,跟第 39/40 節記錄的疑慮一致,打包前仍建議留意.
+- **資源**(拿掉 debug port 後):BRAM 2、DSP 4、FF 3192、LUT 15494(5%)——比含 debug port 的舊報告(FF 10224、LUT 21337)小很多,主要是拿掉三條 debug axis stream 的緣故.
+- **RTL 對 golden 逐位元比對**(新增 `xsim_verify/tb_xsim_top_sps16_default_coldstart.sv`,對真實 `hls_prj/solution1/syn/verilog/*.v`,SPS=16 預設值、不寫 AXI4-Lite、byte0 到 byte7 全部走 reset 放開後的正常 `stream_byte()` handshake):**1024/1024 樣本全部逐位元吻合,最大誤差 0.000001,TLAST 0 個不一致**,offset=0(不需要對齊位移),跟第 36 節 `verify_tmp/` 當初驗證 cold_start 的精度同一個量級.
+  - 過程中一度在 offset=0 measured 879/1024 mismatch、byte0 完全正確但 byte1 開始跟舊的「byte0 誤判 idle」同樣的訊號特徵發散——**後來確認是這次新寫的 testbench 本身有兩個問題,不是設計或 cold_start 的問題**:(a) `stream_byte()` 沿用了第 32 節記錄過的舊 bug 寫法(handshake 偵測到後多等一拍才放開 TVALID,可能把同一筆資料多送一次);(b) byte0 用了已經被取代的「reset 放開前預先塞好」寫法,沒有跟 byte1-7 一樣走 reset 放開後的正常 handshake. 對照第 36 節已驗證乾淨的 `tb_xsim_verify_sps8_lut.sv` 寫法修正這兩點後,問題消失. **教訓:寫新 testbench 時要先比對已驗證版本的 handshake 寫法,不要沿用舊模板裡已知有 bug 的部分.**
+- **環境小插曲(跟設計無關)**:`scripts/run_hls.tcl` 沒有 `exit`,`csynth_design` 跑完後 Vitis HLS 掉進互動式 `vitis_hls>` 提示字元迴圈,在這次背景執行(非真正互動終端機)的情境下卡住等不到輸入、不會自己結束(卡了約 75 分鐘才發現,靠殺行程 `taskkill` 解決,csim/csynth 結果本身在卡住前就已經跑完並寫入報告了,不受影響). 如果之後還要用背景/自動化方式跑 `vitis_hls -f scripts/run_hls.tcl`,建議在腳本最後加一行 `exit`;這屬於腳本改動,尚未執行,待使用者確認要不要加.
+- **結論**:cold_start 已經是正式設計的一部分,csim/csynth/RTL-vs-golden 三層驗證全部通過,`src/top.cpp` 目前跟 `verify_tmp/` 驗證過的行為一致. IP 封裝(`export_design`)仍未執行,等使用者確認要繼續才進行.
+
+## 46. csynth.rpt 的三層結構解說, 以及「wrapper 路徑」猜測的更正(2026-08-06)
+使用者對第 45 節提到的 timing 數字追問細節, 釐清 HLS 把設計合成成的三層結構, 以及 top-level slack 0.02ns 到底代表什麼.
+
+- **三層結構**(對應 `csynth.rpt` 表格的三行, 由外而內):
+  ```
+  tfm_modulator                        (最外層: 整顆 IP, 含 CTRL_s_axi(AXI4-Lite sps_sel 暫存器)、bit_in/i_out/q_out 三個 axis 的 regslice_both)
+   └─ tfm_modulator_Pipeline_BYTE_LOOP  (HLS 自動切出來的子模組, 把 while(1) 迴圈整個包成一個硬體區塊, 含迴圈進出的邊界邏輯)
+       └─ BYTE_LOOP                     (迴圈本身: byte/bit 解碼、差分編碼器、128-tap FIR、相位累加、LUT 查表、輸出格式化)
+  ```
+- **三個 slack 數字, 分屬三層**(第 45 節的 csynth.rpt 數字):`tfm_modulator`=0.02ns、`tfm_modulator_Pipeline_BYTE_LOOP`=0.03ns、`BYTE_LOOP`=4.56ns. 第一次回答時猜測「top-level 貼著上限的瓶頸很可能是 `CTRL_s_axi` 的解碼邏輯」——**這個猜測後來自己更正**:中間那層 `tfm_modulator_Pipeline_BYTE_LOOP`(不含 `CTRL_s_axi`, 那是 top-level 才有的東西)的 slack 就已經跟最外層一樣緊(0.03 vs 0.02), 代表真正貼著上限的路徑落在 `Pipeline_BYTE_LOOP` 這個子模組本身(或它跟外層的邊界), 不是 `CTRL_s_axi`. 當時只憑文字報告猜, 沒有實測定位, 講得比實際掌握的證據更肯定, 這是這次回答裡要修正的地方.
+- **160MHz 有沒有餘裕, 取決於問哪一段**:`BYTE_LOOP`(迴圈內部穩態運算, FIR/phase/LUT)本身 slack 4.56ns, 很寬鬆; 但 `Pipeline_BYTE_LOOP`/`tfm_modulator` 這兩層 slack 只有 0.02~0.03ns. 一顆 IP 實際能跑多快取決於**整個設計裡最慢的那條路徑**, 不是取決於使用者關心的那一段——所以結論是「(HLS 估計上)壓線過關, 不是有餘裕」, 且 128-tap 加總樹屬於 `BYTE_LOOP` 內部運算(算進那個寬鬆的 4.56ns 裡), 不是限制時脈的瓶頸.
+- **這個推論後來被第 47 節的真實 P&R 結果部分推翻**: HLS 的 Estimated 只是簡化的靜態時序模型, 不是真正繞線後的結果, 這正是接下來去跑真實 Vivado 實作的動機.
+
+## 47. 真實 Vivado out-of-context 合成+佈局+繞線驗證: 160MHz 實際餘裕遠比 HLS 估計的寬(2026-08-06)
+使用者要求不要只信 HLS 的 timing estimate, 實際跑一次 Vivado 驗證 160MHz 在真正繞線後撐不撐得住. 直接對 `hls_prj/solution1/syn/verilog/*.v`(cold_start 版本, 含 debug port 已拿掉)做 out-of-context 合成:
+
+- **腳本**:新增 `hls_prj/solution1/syn/verilog/timing_check/run_ooc_timing.tcl`(`hls_prj/` 整個是 git-ignored, 屬於 build 產物, 不影響版控), 流程 `read_verilog [glob *.v]` → `synth_design -top tfm_modulator -part xczu9eg-ffvb1156-2-e -mode out_of_context` → `create_clock -period 6.25` → `opt_design` → `place_design` → `phys_opt_design` → `route_design` → `report_timing_summary`/`report_timing`/`report_utilization`. 用 `vivado -mode batch -source ...`(不是 `vitis_hls -f`)執行, `-mode batch` 跑完會自動結束, 不會有第 45 節那個卡在互動提示字元的問題, 腳本本身也明確寫了 `exit`.
+- **執行時間**:合成本身很快, `place_design` 開始後陸續跑 floorplan/global placement/`phys_opt_design`/`route_design`, 全部背景執行約十幾分鐘完成(遠比第 45 節那次意外卡住的 75 分鐘短, 因為這次是真的在做事, 不是卡住).
+- **結果(`timing_check/timing_summary_post_route.rpt`)**:
+  ```
+  WNS (Worst Negative Slack) = 2.232 ns   (Setup, 過關, 餘裕很大)
+  WHS (Worst Hold Slack)     = 0.039 ns   (Hold, 過關, 但很緊)
+  TNS = 0.000ns, THS = 0.000ns            (沒有任何一個 endpoint 違規)
+  "All user specified timing constraints are met."
+  ```
+  換算真實關鍵路徑延遲 `6.25 - 2.232 = 4.018ns`, 對應真實 Fmax(setup 這邊)約 `1/4.018ns ≈ 249MHz`——**跟 HLS 自己估計的 0.02ns slack 差了超過 100 倍, 160MHz 實際上相當寬鬆, 不是壓線過關**.
+- **真正最慢的路徑, 位置跟第 46 節的猜測不同**:報告顯示 worst setup path 是 `coeff_11_reg`(FIR 係數暫存器)→ `add_ln322_73_reg`(top.cpp:322 128-tap 加總樹裡的一個加法器), 9 級邏輯(4 個 CARRY8 進位鏈 + 幾個 LUT), 都在 `grp_tfm_modulator_Pipeline_BYTE_LOOP_fu_486` 這個實例裡. 也就是說**真正繞線後, 128-tap 加總樹反而是相對最慢的路徑**, 不是第 46 節猜測的 `Pipeline_BYTE_LOOP` 邊界控制邏輯——但因為還有 2.232ns 餘裕, 完全不是問題. **這證實 HLS 的 Estimated report 判斷「誰是瓶頸」跟真實繞線後可能不一樣, 兩種來源不能只看其中一個就下定論.**
+- **資源用量也差很多**:真實 post-route 只用 1952 個 LUT(0.71%), 遠低於 HLS 自己估計的 15494(5%)——Vivado 真正的邏輯合成/優化比 HLS 的資源估算更積極, 這也是常見現象.
+- **唯一值得留意的地方**:Hold slack(0.039ns)雖然過關但餘裕比 Setup 薄很多. Hold 違規跟時脈快慢無關(是同一個 clock edge 內、暫存器到暫存器走線太短造成的競爭), 目前乾淨過關, 但之後接進真正的系統 block design(不同的 floorplan/congestion 環境)時這條線餘裕比較薄, 值得留意, 不代表現在需要採取行動.
+- **結論**:csim/csynth/RTL-vs-golden/真實 P&R timing 四層驗證全部通過. `HW_DEBUG_MODE` 拿掉、cold_start 套用後的 `src/top.cpp`, 在 xczu9eg-ffvb1156-2-e、160MHz 目標下確認時序與功能都沒問題. IP 封裝(`export_design`)仍未執行, 待使用者確認才進行.
+
+## 48. IP 正式打包完成(2026-08-06)
+使用者確認四層驗證都過後, 決定繼續打包.
+
+- **改動**:`scripts/run_hls.tcl` 最後一行 `export_design ...` 取消註解(第 20 節記錄過的封裝路徑, 這是這件事本身要求的直接改動, 不是side-effect).
+- **執行方式**:這次改用 `echo "exit" | vitis_hls.bat -f scripts/run_hls.tcl`(不是單純 `vitis_hls -f ...`), 靠 stdin 餵一個 `exit` 命令解決第 45 節記錄過的「跑完 csynth 後卡在互動式 `vitis_hls>` 提示字元」問題, 不用改動 `run_hls.tcl` 本身. 這次全程(csim+csynth+export_design)只花 84.343 秒, 乾淨結束, 沒有再卡住.
+- **結果**:`csim_design` `TEST PASSED`;`csynth_design` 跟第 45 節一致(`Estimated Fmax=220.51MHz`, loop constraints satisfied);`export_design` 產生 `hls_prj/solution1/impl/export.zip`(167KB, 44 個檔案), 內含:
+  - `component.xml`(IP 描述檔)
+  - `hdl/verilog/`、`hdl/vhdl/`(兩種語言都有, 含 `tfm_modulator.v`/`.vhd` 頂層跟所有子模組, LUT ROM 的 `.dat` 檔也在裡面)
+  - `constraints/tfm_modulator_ooc.xdc`(out-of-context 合成用的時脈限制)
+  - `drivers/tfm_modulator_v1_0/`(bare-metal C driver 跟 Linux driver 原始碼)
+  - `doc/ReleaseNotes.txt`、`xgui/tfm_modulator_v1_0.tcl`(Vivado IP Catalog 的 GUI 客製化參數)
+  - 是標準完整的 Vivado IP Catalog 封裝, 第 21 節記錄過的匯入步驟(解壓縮到 `ip_repo/` → `Settings → IP → Repository → Add Repository` → 在 Catalog 搜尋 `tfm_modulator`)可以直接照做.
+- **檔名已加上版本號**:使用者對版本號命名沒有特定想法, 交給我決定. 改成 `tfm_modulator_v1.0_20260806.zip`(`hls_prj/solution1/impl/` 底下), 版本號 `v1.0` 跟 `component.xml` 裡 Vitis HLS 自己寫的 `<spirit:version>1.0</spirit:version>` 對齊, 後面加日期(打包當天, 2026-08-06)方便跟未來重新 export 的版本區分. 之後如果內容有變(例如改 `sps_sel` 行為、換 `dac_data` 打包邏輯等), 版本號或日期要跟著換, 不要沿用同一個檔名覆蓋.
+- **本次(2026-08-05/06)全部討論的總結**:`HW_DEBUG_MODE` 關閉 → 封裝來源確認(`hls_prj/solution1`)→ cold_start 原理釐清 → 差分編碼自癒特性推導 → 開機時序與 ADRV9009 `link_clk`/CDC 議題 → cold_start 正式套用 `src/top.cpp` 並四層驗證(csim/csynth/RTL-vs-golden/真實 P&R)全過 → IP 打包完成. `dac_data` 打包/CDC 轉接 IP(第 44 節)仍是待辦, 屬於同事的 ADRV9009 對接範疇.
