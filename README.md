@@ -15,6 +15,14 @@
 4. export_design: 拿著步驟 2 產生出來的硬體設計圖, 實際對應到你指定的 FPGA 晶片內部結構上. 包含了邏輯合成 (Logic Synthesis), 佈局 (Placement - 決定邏輯閘要放在晶片的哪個位置) 以及繞線 (Routing - 把這些邏輯閘用金屬線連起來).
   - 目的: 獲得最真實的硬體數據, 並準備產生最終燒錄檔.
 
+## 驗證流程:C 模擬、RTL 合成、RTL 模擬是三條獨立的路, 不是接在一起跑的鏈式流程
+容易搞混的地方:以為「跑 `csim_design` 之後接著就會跑到 SystemVerilog testbench」, 實際上不是, 三者互相獨立, 只是共用同一份 `top.cpp` 當輸入.
+
+1. **第一條路:C 模擬(`csim_design`, 跟 RTL 完全無關)**——把 `top.cpp` 當一般 C++ 程式編譯、跟 `tb_top.cpp` 連結執行. 這裡完全沒有 RTL、沒有時脈、沒有 SystemVerilog testbench 的影子, 純軟體函式呼叫, 產出 `hls_prj/solution1/csim/build/output_waveform.csv`, 這份 CSV 就是後面拿來當比對基準的 **golden**.
+2. **第二條路:合成(`csynth_design`, 把 C++ 變成電路圖, 一樣不涉及模擬)**——把 `top.cpp` 轉成 Verilog/VHDL, 寫到 `hls_prj/solution1/syn/verilog/`. 這一步也不執行任何模擬, 純粹是翻譯, 產出的是靜態的 `.v`/`.vhd` 檔案.
+3. **第三條路:RTL 模擬(手寫 SystemVerilog testbench + Vivado `xsim`, 完全獨立的工具鏈, 不是 Vitis HLS)**——`xsim_verify/` 底下的 `.sv` testbench 是事先手寫好的檔案, 裡面實體化(instantiate)的就是第 2 步產出的 RTL 模組. 執行時要靠 Vivado 三個工具接力(不是一個指令):`xvlog` 編譯 RTL + testbench → `xelab` 串接成可執行的模擬快照 → `xsim <快照> -tclbatch xsim_run.tcl` 才是真正**執行**模擬(`xsim_run.tcl` 只是三行 batch 指令: 記錄波形、跑到底、結束, 不是「把結果記錄下來」而已, 是驅動整個模擬真正跑起來的那個動作). 這一步跑完, testbench 自己的邏輯會寫出一份 `output_waveform_xsim_*.csv`, 是 RTL 實際跑出來的結果.
+4. **比對(目前是人工做的, 沒有腳本自動化)**——拿步驟 3 的 CSV 跟步驟 1 的 golden CSV 逐點比對, 確認 RTL 行為跟 C model 一致. 完整的 testbench↔golden 對照見 `xsim_verify/README.md`.
+
 ## C Simulation 功能介紹
 1. Launch Debugger: 編譯你的 C/C++ 程式碼與 Testbench, 但不會直接把程式跑完, 而是會自動切換到 Debug Perspective(除錯介面). 當你的 C Simulation 結果不如預期、發生當機(例如 Segmentation Fault), 或是你想確認某個變數在迴圈裡的值是如何變化的時候。你可以利用它來下斷點(Breakpoints)、單步執行(Step Over/Into)並即時監控變數.
 2. Build Only: 工具只會執行編譯動作(將程式碼編譯成執行檔 csim.exe), 不會執行你的 Testbench. 當你剛寫完或大幅修改了一段程式碼, 只想快速檢查「有沒有語法錯誤(Syntax Error)」、「標頭檔有沒有 include 成功」或「資料型態有沒有給錯」時.
@@ -110,6 +118,25 @@ DDR (PS)
 ## 硬體 reset vs 軟體 reset 的差別
 - 硬體 reset: 是一條實體線(例如 block design 裡常見的 peripheral_aresetn), 直接接到 IP 內部所有暫存器的 reset pin. 它由系統的 reset controller 產生, 只要這條線被 assert, 下一個 clock edge 硬體立刻清零, 不需要 CPU 介入, 即使軟體還沒開始跑, 或當機了, 這個 reset 依然有效.
 - 軟體 reset(你現在的做法): reset 這個訊號被你用 #pragma HLS INTERFACE s_axilite 變成一個可以被 CPU 透過 AXI-Lite 寫入的暫存器 bit, 函式內部的 if (reset) {...} 本質上就是一段普通的運算邏輯分支. 這代表必須靠軟體主動去寫這顆暫存器, reset 才會發生. 系統的全域 reset net(如 block design 裡的 sys_cpu_resetn)不會自動連到它, 因為打包出來的 IP 甚至不會有一個實體 reset pin 讓你在 block design 接. 如果 CPU 忘記寫, 或開機早期驅動還沒載入, IP 內部狀態會停在上電後的不確定初始值, 直到你真的寫入為止.
+
+## 開機到 PL 配置完成的流程(ZCU102 + ADRV9009, Kuiper Linux)
+BIF(Boot Image Format)分割區的順序決定了整個開機順序,SD 卡開機依序執行:
+
+```
+zynqmp_fsbl.elf(First Stage Boot Loader)
+  → pmufw.elf(PMU Firmware)
+  → system.bit(PL 配置 —— 這裡面就是你的 tfm_modulator, 透過 PCAP 燒入 PL)
+  → bl31.elf(ARM Trusted Firmware)
+  → u-boot.elf
+  → Linux(Image, Kuiper Linux)
+```
+
+幾個容易誤解的地方:
+
+1. **PL 配置發生在 FSBL 階段, 早於 ATF/u-boot/Linux 開機**——`system.bit` 是 BIF 裡排在 `pmufw.elf` 之後、`bl31.elf` 之前的一個 datafile partition, 也就是說 FPGA 邏輯在 Linux 核心開始跑之前就已經燒好了, 不是等 Linux 開機、driver 載入之後才發生的事.
+2. **PL 配置完成的那一刻, fabric 裡所有 IP(含 `tfm_modulator`)已經物理上存在, 但預設被 reset network 壓住**——這是硬體 reset 的性質(見上方「硬體 reset vs 軟體 reset 的差別」), 不需要 CPU 介入就能生效, 但需要有東西主動去放開(deassert)它, 才會真的開始運作.
+3. **Linux 開機後接手的是既有的 ADI IIO/JESD204 driver**——把 ADRV9009 RFIC、JESD204 link(GT transceiver)這些帶起來, 是 ADI 既定流程, 不是使用者自己要寫的部分.
+4. **自訂 IP 的 reset 什麼時候放開, 取決於它接在哪個時脈域**——如果 `ap_clk`/`ap_rst_n` 是跟著某個既有子系統(例如 JESD204 TX core)共用同一條 reset, 就會自動跟著那個子系統一起放開, PS 軟體不用另外處理; 如果是獨立接一顆 GPIO 控制的 reset, 就需要 PS 應用程式自己主動放開. 兩種接法各有取捨, 細節要看實際 block design 怎麼接.
 
 ## Kuiper Linux
 ADI 官方釋出的 Kuiper Linux 映像檔(Image)採取的是「大補帖 (Universal)」的設計理念. 當工程師們在編譯這個 Linux 系統時, 他們已經把 AD9361, ADRV9009, ADRV9002 等數十種晶片的 Linux Kernel Driver(基於 IIO 子系統)全部編譯進去了.

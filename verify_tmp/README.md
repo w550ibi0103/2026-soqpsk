@@ -18,4 +18,10 @@
 
 ## 跟 `hls_prj_verify/` 的關係
 
-`hls_prj_verify/`(repo 根目錄, git-ignored)是 Vitis HLS 拿 `verify_tmp/src/top.cpp` 當輸入合成出來的 build 產物,由 `xsim_verify/golden_sps8/csim_sps8_only.tcl`/`csynth_verify_sps8.tcl` 產生(要從 repo 根目錄執行)。`verify_tmp/` 本身只有原始碼(9 個檔案,`.tcl`/`src/`/`tb/`),不含任何合成產物。
+`hls_prj_verify/`(repo 根目錄, git-ignored)是 Vitis HLS 拿 `verify_tmp/src/top.cpp` 當輸入合成出來的 build 產物。`verify_tmp/` 本身只有原始碼,不含任何合成產物;負責產生 `hls_prj_verify/` 的是這幾支 `.tcl`(都要**從 repo 根目錄執行**,例如 `vitis_hls -f verify_tmp/csim_sps8_only.tcl`):
+
+- **`run_hls_verify.tcl`** — 最早的版本,`csim_design` + `csynth_design` + `cosim_design` 都跑,`create_clock -period 10`(100MHz,舊時脈)。這支其實是想直接測「sps_sel 釘死之後 cosim 能不能跑」,是後面兩支的前身。
+- **`csim_sps8_only.tcl`**(2026-08-06 從 `xsim_verify/golden_sps8/` 搬過來)— 只跑 `csim_design`,`VERIFY_FIXED_SPS_SEL=1`,用來產生 SPS=8 的 golden CSV。
+- **`csynth_verify_sps8.tcl`**(同上搬過來)— `csim_design` + `csynth_design`(不含 cosim),`-DTEST_SPS_SEL=1`,`create_clock -period 6.25`(160MHz,對應客戶規格),產生給 `xsim_verify/` 用的 RTL。
+
+三支都是 `open_project -reset hls_prj_verify`,同一個專案名稱、彼此會互相覆蓋,不是同時並存的三個版本——**目前實際會用到的是 `csynth_verify_sps8.tcl`**(時脈對、有輸出 RTL 給 xsim 用),`run_hls_verify.tcl` 因為時脈舊、且會撞 cosim 的已知限制,已經是歷史文件,留著純參考。

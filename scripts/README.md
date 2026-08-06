@@ -19,4 +19,4 @@
 
 - **`run_xsim_verify.sh`** — 跑 `tb_xsim_top.sv`(對 `hls_prj/solution1` 的真實介面, reset 放開後透過 AXI4-Lite 寫 `sps_sel`)。這支最早踩到「sps_sel AXI4-Lite write race」的問題,發散不是 bug,是已知限制的展示。
 - **`run_xsim_verify_sps16.sh`** — 跑 `tb_xsim_top_sps16_default.sv`(同樣對 `hls_prj/solution1`,但完全不寫 AXI4-Lite, `sps_sel` 停在 reset 預設值 0=SPS16),避開上面那個 race,乾淨對照組。
-- **`run_xsim_verify_sps8_clean.sh`** — 跑 `tb_xsim_verify_sps8.sv`,對象是 `hls_prj_verify/solution1`(`verify_tmp/src/top.cpp` 編譯出來的 RTL, `sps_sel` 編譯期釘死成 1=SPS8, 完全沒有 `s_axi_CTRL`, 不可能有 race)。`hls_prj_verify/` 由 `xsim_verify/golden_sps8/csim_sps8_only.tcl`/`csynth_verify_sps8.tcl` 產生(要從 repo 根目錄執行)。
+- **`run_xsim_verify_sps8_clean.sh`** — 跑 `tb_xsim_verify_sps8.sv`,對象是 `hls_prj_verify/solution1`(`verify_tmp/src/top.cpp` 編譯出來的 RTL, `sps_sel` 編譯期釘死成 1=SPS8, 完全沒有 `s_axi_CTRL`, 不可能有 race)。`hls_prj_verify/` 由 `verify_tmp/csim_sps8_only.tcl`/`csynth_verify_sps8.tcl` 產生(要從 repo 根目錄執行), 細節見 `verify_tmp/README.md`。

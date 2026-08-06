@@ -16,14 +16,14 @@
 | `tb_xsim_top.sv` | `hls_prj/solution1`(真實設計, CORDIC 版, 舊介面含 debug port) | `scripts/run_xsim_verify.sh` | `hls_prj/solution1/csim/build/output_waveform.csv` | 歷史——用來展示 `sps_sel` AXI4-Lite write race(Note.md 第 24 節), 預期會發散, 不是「應該要過」的測試 |
 
 **`hls_prj_verify/` 是什麼**:`verify_tmp/src/top.cpp` 編出來的 build 產物(git-ignored),由
-`golden_sps8/csim_sps8_only.tcl`/`csynth_verify_sps8.tcl` 產生,細節見
-`verify_tmp/README.md`。
+`verify_tmp/csim_sps8_only.tcl`/`csynth_verify_sps8.tcl` 產生(2026-08-06 搬進 `verify_tmp/`,原本放在
+`xsim_verify/golden_sps8/`——這兩支是拿 `verify_tmp/` 當輸入的建置腳本,概念上屬於
+`verify_tmp/`,不屬於這裡),細節見 `verify_tmp/README.md`。
 
 ## 其他檔案
 
-- **`xsim_run.tcl`** — 所有 testbench 共用的 xsim batch 指令(`log_wave -recursive *` + `run all` + `quit`)。
-- **`golden_sps8/`** — 產生 `hls_prj_verify`/SPS8 golden 用的三支 tcl(`csim_sps8_only.tcl`、`csynth_verify_sps8.tcl`、`csim_real_sps8_debug.tcl`),用途見 `scripts/README.md`。
-- **`dut_full_dump.vcd` + `xsim_vcd_dump.tcl` + `alpha_stream_from_vcd.csv`** — 2026-07-28 追 `shift_reg`/`alpha` 內部訊號時的 VCD dump-and-parse 繞路方法(Note.md 第 33 節),後來直接加了專用的 `debug_alpha_stream` port 取代,這批檔案留著純參考。
+- **`xsim_run.tcl`** — 所有 testbench 共用的 **xsim(Vivado 模擬器)批次指令**(`log_wave -recursive *` + `run all` + `quit`),是 xsim 自己的控制腳本,不是 Vitis HLS 的專案建置腳本(那是 `verify_tmp/`/根目錄 `scripts/run_hls.tcl` 那一類 `.tcl`)。每支 `.sh` 驅動腳本最後都靠 `xsim.bat ... -tclbatch xsim_run.tcl` 呼叫它。
+ **`dut_full_dump.vcd` + `xsim_vcd_dump.tcl` + `alpha_stream_from_vcd.csv`** — 2026-07-28 追 `shift_reg`/`alpha` 內部訊號時的 VCD dump-and-parse 繞路方法(Note.md 第 33 節),後來直接加了專用的 `debug_alpha_stream` port 取代,這批檔案留著純參考。
 - **`golden_expected_nonzero_pulses.csv`** — 第 33 節第一次猜訊號名稱失敗留下的產物,已知是錯的猜測,純參考不代表正確結果。
 - **`current_phase_xsim.csv`、`debug_phase_xsim.csv`、`debug_pulse_xsim.csv`、`phase_diff.csv`、`golden_sps8_debugphase_output_waveform.csv`** — CORDIC 時代(2026-07-23)的內部訊號探針,搭配 `tb_xsim_top.sv`/`tb_xsim_verify_sps8.sv` 那次跑的,LUT 上線後已經沒有現實意義,純參考。
 - **`*.log`/`*.jou`/`*.pb`/`xsim.dir/`** — 工具執行紀錄跟編譯資料庫,每次跑都會重新產生,git-ignored,不需要理會內容。
