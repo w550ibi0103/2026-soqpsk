@@ -178,6 +178,30 @@ SD 卡內必須維持的檔案清單 (於 BOOT 根目錄):
 - system.dtb (原本對應 ADRV9009 的設備樹, 只要你沒有修改 AXI 位址或中斷腳位, 通常可以不變)
 - uEnv.txt (開機參數設定檔, 不變)
 
+# tfm_modulator IP 使用說明
+
+## 使用方式
+1. 這顆 IP 是 free-running(`ap_ctrl_none`), 沒有 `ap_start`/`ap_done`. `ap_rst_n` 一放開, `BYTE_LOOP` 立刻自動開始跑, 不需要 PS 額外觸發.
+2. 除了資料介面, IP 提供一個 `sps_sel` 的 AXI4-Lite 控制暫存器, 用來切換調變的取樣倍率(SPS).
+
+## 介面總覽
+1. `ap_clk` (input, clock): 目標 160MHz(對應客戶規格 20Mbit/s @ SPS=8 -> 160MSPS), 已用真實 Vivado out-of-context 合成+佈局+繞線驗證過, timing 有餘裕(WNS = +2.232ns).
+2. `ap_rst_n` (input, 1-bit): Active low, 拉低才是 reset. 放開後 IP 自動開始跑, 無需 `ap_start`.
+3. `bit_in` (input, 8-bit, AXI4-Stream): 每個 byte 帶 8 個 bit 資料(LSB first). 含 TLAST, 由上游 DMA 標記「這個 burst 的最後一個 byte」.
+4. `sps_sel` (input, 邏輯值 2-bit, AXI4-Lite slave, bundle=`CTRL`, offset `0x10`): 32-bit 暫存器, 只有 bit[1:0] 有意義. `0 -> SPS=8`(reset 後預設值), `1 -> SPS=16`, `2`/`3` 保留未用(fallback 成 SPS=16).
+5. `i_out` (output, 16-bit Q1.15, AXI4-Stream): 每個 `ap_clk` 都有一筆新樣本(achieved II=1, 連續無空窗). 含 TLAST, 對應輸出 burst 的最後一筆樣本.
+6. `q_out` (output, 16-bit Q1.15, AXI4-Stream): 同上, 跟 `i_out` 是各自獨立握手的兩條 stream, 沒有協定層面保證的同步機制(IP 內部同一個 clock 一起 write 出來, 但接收端仍需兩條都收, 不能只看其中一條的 valid).
+
+## 風險點與注意事項
+1. **下游 TREADY 不能真的拉低**: `i_out`/`q_out` 內部管線是 achieved II=1 的連續輸出, 若下游對 TREADY 做真的流控(backpressure), IP 內部管線會被回壓卡住. 這在功能上不會出錯(`hls::stream` 的 write 會擋住等待), 但如果最終消費端是像 ADI `tx_fir_interpolator`/`tx_adrv9009_tpl_core` 這種無 valid/ready、固定速率的介面, 任何一次卡頓都會讓它拿到 stale/重複資料. 因此下游 TREADY 必須視同永遠為高, 真正需要吸收速度差異時要靠 FIFO, 而不是讓 TREADY 真的降下來.
+2. **可能需要接 CDC(Clock Domain Crossing)**: `i_out`/`q_out` 是 `ap_clk`(160MHz)時脈域下的輸出. 若下游(resample/DAC 路徑)跑在不同時脈域, 中間必須插入標準的 AXIS Clock Converter 或非同步 FIFO 做跨時脈處理, 不能直接硬接.
+3. **`sps_sel` 的 AXI4-Lite 寫入跟 reset 放開有時序競賽**(已驗證的根因, 非臆測): `int_sps_sel`(`sps_sel` 的儲存暫存器)跟 `BYTE_LOOP` 共用同一個 `ap_rst_n`. `ap_rst_n` 一放開, `BYTE_LOOP` 立刻開始判讀第一個 byte; 但 AXI4-Lite 寫入(`AWREADY`/`WREADY`)也必須等 reset 放開之後才能生效, 兩者搶在同一個時間點起跑. 實測結果是: reset 放開的當下想讓 `sps_sel` 停在非預設值幾乎不可能, 這個「錯誤起跑」的暫態一旦發生(precoder 歷史被污染 + phase accumulator 持續累積不會自動歸零)是永久性偏移, 不會隨時間收斂回正確軌跡.
+   - 目前唯一驗證過安全的用法: reset 放開後維持預設值(SPS=8)運作.
+   - 若需要非預設值, 只能在 `ap_rst_n` 仍 assert 期間先寫好 `sps_sel`, 確保寫入生效後才放開 reset(此用法尚未實測, 先當作限制告知使用者, 不要當作已解決的功能).
+4. **`sps_sel` 切換非 glitch-free**: 執行中直接改變 `sps_sel` 不保證乾淨, `shift_reg`/`current_phase` 不會自動對齊新的取樣率, 只能在 `ap_rst_n` assert 期間切換.
+5. **`debug_*` 埠僅供除錯, 正式版不存在**: `HW_DEBUG_MODE` 巨集關閉(release 版本狀態)時, 所有 `debug_*` 訊號在合成結果中不存在, 同事若要接 ILA/ChipScope debug 需另外開啟這個巨集重新合成.
+6. **目前驗證範圍是 IP 內部時序, 系統整合層級尚未驗證**: 真實 P&R 驗證(WNS = +2.232ns @ 160MHz)確認的是 IP 內部暫存器對暫存器的路徑, IP 邊界接到完整系統(真正的時脈來源、真正的下游)後, 仍需在完整 block design 裡重新跑一次 timing 才算數.
+
 # 問題與解法
 ## 編譯器在跑模擬 (CSIM) 時, 找不到你的標頭檔 top.h
 1. 點擊工具列的 Project -> Project Settings
