@@ -45,7 +45,7 @@ static const phase_pos_t LUT_POS_SCALE = (phase_pos_t)(LUT_SIZE / (2.0 * 3.14159
 void tfm_modulator(
 	// The '&' indicates a C++ reference. In HLS, it maps to a physical hardware port rather than passing data by value
 	hls::stream<bit_pkt> &bit_in,  // 8-bits
-	ap_uint<2> sps_sel,            // 0->SPS16, 1->SPS8, 2->SPS4, 3->reserved(falls back to SPS16)
+	ap_uint<2> sps_sel,            // 0->SPS8(reset default), 1->SPS16, 2/3->reserved(falls back to SPS16)
 	hls::stream<sample_pkt> &i_out,  // 16-bits
 	hls::stream<sample_pkt> &q_out  // 16-bits
 
