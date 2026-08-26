@@ -5,7 +5,8 @@ Bias: caution over speed on non-trivial work. Use judgment on trivial tasks.
 
 ## Rule 0.1 — Language
 - Use **Traditional Chinese** in all dialogs and conversations.
-- Use **English** (Markdown) when writing documents, comments, or code.
+- Use **English** or **Traditional Chinese** (Markdown) when writing documents, depending on the context. If you are unsure which language to use, ask me for clarification.
+- Use **English** when writing comments and code.
 
 ## Rule 0.2 — Workspace Rules
 - At the start of each conversation, check if a `.agent/` directory exists in the workspace root.
