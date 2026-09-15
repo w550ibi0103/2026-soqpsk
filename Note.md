@@ -505,3 +505,52 @@ handshake 完成後又多等一拍才放 `TVALID`——如果 DUT 這邊的 `reg
 - **踩到的坑(不是 bug, 是環境細節)**:這次 LUT ROM 的 `.dat`/`.v` 檔名又變了——這次 HLS 把它命名成短版 `tfm_modulator_COS_LUT_ROM_AUTO_1R.dat`(沒有 `_tfm_modulator_Pipeline_BYTE_LOOP_` 中綴), 跟第 49 節、第 51 節那兩次用的長版名稱不一樣(而長版名稱其實才是今天稍早清 `verify_tmp/` 時被我誤判成「HW_DEBUG_MODE 時代孤兒檔案」而刪掉的那組——現在證實那組命名不是哪個時代專屬, 是**同一份 `src/top.cpp`、不同次 `csynth_design` 執行, HLS 對這個 ROM 子模組的命名/是否內聯就可能不一樣**, 推測是這次拿掉 `g_coeff_sps4` 後, 資源共享/binding 的排程跟著變, 連帶影響到 HLS 怎麼組織這個子模組的階層跟命名). **教訓更新**:同步 `.dat` 檔到 `xsim_verify/` 時, 不能認定檔名固定不變, 每次都要重新確認 `hls_prj/solution1/syn/verilog/*.dat` 目前實際叫什麼, 舊名字的殘留檔案也要一併清掉(不然可能兩份同時存在, 沒被引用的那份只是佔空間, 但下次搞混時容易誤判).
 - **RTL 對 golden 逐點比對, 這次多了一個插曲**:offset=0 比對時 487/512 樣本超出容忍度, 最大誤差 0.21, 1 個 TLAST 不一致——第一時間以為是新 bug, 但掃過 -10~+10 的 offset 後發現 **offset=+1 時完全乾淨**:512 樣本全部落在 `1e-4` 容忍度內, 最大誤差 `0.0000005`, TLAST 0 個不一致, 精度量級跟之前歷次驗證一致. 進一步比對確認 golden 跟 RTL 在最開頭的 idle carrier 階段是逐位元相同的, 分歧點出現在訊號真正開始變化(FIR pulse 響應第一次有感的地方):golden 在第 23 個樣本開始變化, RTL 在第 24 個樣本才開始變化, 差了剛好 1 個 clock cycle. 檢查過 testbench 本身的 reset/`stream_byte()` 時序程式碼(這次改名沒有動到這段, `git diff` 確認過)跟 `cold_start` retry 迴圈的 C++ 邏輯(`iter_in_byte`/`shift_amt` 的解碼不影響 retry 是否繼續, retry 純粹看 `bit_in.read_nb()` 什麼時候成功, 理論上跟 `sps_sel` 數值無關), 都排除是這次改動直接造成的邏輯錯誤. **目前最合理的解釋**:這次拿掉 `g_coeff_sps4` 讓資源綁定/排程改變(這次 `xvlog` compile log 裡的 DSP/乘法器子模組命名`tfm_modulator_am_submul_16s_16s_16s_33_4_1_DSP48_0`、新出現的 `tfm_modulator_mul_12s_16s_27_1_1`,都跟第 49/51 節那兩次不一樣), 連帶讓 `bit_in` 的 `regslice_both` 或其他控制邏輯的實際握手時序偏了 1 個 clock cycle——**這屬於「這次合成出來的硬體, 真實握手延遲剛好是 1 個 cycle」的正常變動, 不是設計錯誤**, 且第 45 節本來就把「offset 需要比對確認, 不能假設一定是 0」列為驗證方法論的一部分. **沒有實際測過**「這個 offset 是不是 SPS=8 專屬, 還是這次合成出來的 RTL 不管哪個 SPS 都會偏 1 拍」(要驗證後者需要對同一份 RTL 另外接一段 AXI4-Lite write 把 `sps_sel` 設成 1, 這次沒有做, 留待之後真的需要驗 SPS=16 這條路時再確認), 但這不影響本次驗證的結論——SPS=8(reset 預設值)這條路徑經對齊後功能完全正確.
 - **IP 重新封裝**:`hls_prj/solution1/impl/export.zip` 複製成 `tfm_modulator_v1.2_20260806.zip`(從 v1.1 升版, 這次是 `sps_sel` 對照表的介面改動——任何驅動這顆 IP 的人如果沿用舊版 0→16/1→8/2→4 的假設去寫 `sps_sel`, 現在會拿到錯的 SPS, 是真正的 breaking change, 不只是內部改動).
+
+# 討論:改用純 Verilog(不用 Vitis HLS)重寫整個 SOQPSK IP(2026-09-11, 純討論, 尚未動手寫)
+
+使用者想討論如果放棄 Vitis HLS、直接在 Vivado 手寫 Verilog 重寫整個 `tfm_modulator`(含差分編碼/三元 precoder 前端), 值不值得、要花多少時間. **這節只是設計討論紀錄, 沒有任何程式碼異動**, 下次要接續這個話題.
+
+## 54. Vitis HLS vs 手寫 Verilog 的優缺點(概論)
+- **手寫 Verilog 優點**:完全掌控時序/資源, 避免 HLS 排程不透明帶來的問題(例如本專案已經踩過的 [[project_cosim_ap_ctrl_none_limitation|cosim 對 `ap_ctrl_none` 支援不佳]], 見第 21 節).
+- **缺點**:開發速度慢很多, fixed-point 轉換/濾波器係數調整都要手動處理, 日後改演算法要重寫 RTL 而非改 C++ 重跑合成.
+- **建議分層看**:已經在 HLS 跑順的部分(這顆 IP 目前狀態良好, 第 49-53 節)可以維持現狀; 但如果常遇到 HLS 排程/interface 除錯的痛苦, 且模組時序邏輯單純, 改手寫反而更好驗證.
+
+## 55. 全部改寫成 Verilog 的可行性評估
+看過 `src/top.cpp` 後確認: 核心演算法(差分編碼+三元 precoder+128-tap FIR(已經是 compare/select 不是真乘法, 見第 47 節相關優化)+ phase accumulator + sin/cos LUT 內插)邏輯本身很精簡, 手寫不算太耗時. 真正耗工夫的兩塊:
+1. **AXI4-Stream/AXI4-Lite 介面手寫**(tready/tvalid backpressure、TLAST 追蹤、`sps_sel` 暫存器) — 但後續確認(第 57 節)這塊其實可以大幅簡化.
+2. **128 級加法樹的手動 pipeline 切割**才能 timing closure(HLS 的 `PIPELINE II=1` 是自動排程/retiming, 手寫要自己抓 critical path 插 pipeline register).
+
+**人工全部重寫+驗證的粗估**(假設是熟悉這個演算法+Xilinx 工具鏈的工程師):2~4 週(10~20 工作天), 拆解:
+| 項目 | 預估天數 |
+|---|---|
+| 核心 datapath 翻譯(差分編碼/precoder/shift reg/FIR select/phase/LUT) | 3~5 天 |
+| 128 級加法樹手動 pipeline + timing closure | 2~3 天 |
+| AXI4-Stream/Lite 介面整合 | 1~2 天 |
+| LUT/係數產生腳本改格式(`.inc`→`.mem`/`$readmemh`) | 0.5 天 |
+| Testbench 搬移 + bit-exact 比對 Python 參考模型 | 2~3 天 |
+| Buffer(timing 迭代、邊界案例除錯) | 3~5 天 |
+
+## 56. AXI4-Stream/AXI4-Lite 介面不用完全手刻, 有現成工具可套用
+- **AXI4-Lite**:Vivado「Create and Package New IP」→「AXI4 Peripheral」精靈可直接生成標準 AXI4-Lite slave 範本(address decode、write/read state machine), 只要把 `sps_sel` 接進生成的 slave register.
+- **AXI4-Stream backpressure**:IP catalog 的 AXIS Register Slice、AXIS Data FIFO 可以包在核心邏輯外圍處理緩衝跟 handshake, 核心運算只需面對簡化過的 valid/ready 介面.
+- **驗證**:Vivado 內建 AXI VIP 可在 testbench 端當 master/slave 做 protocol compliance check.
+
+## 57. 由 Claude 代寫的時間估算 + 下游規格確認, 大幅簡化介面設計
+- **Claude 代寫 vs 人工重寫**:程式碼草稿(核心 datapath 翻譯)可以在同一個對話 session 內生出, 不需要「學習」演算法的時間. 但 **Vivado synthesis timing closure** 跟 **XSIM 跑 bit-exact 比對**是真實工具執行時間, 無法用「誰來寫」壓縮, 通常需要好幾輪「跑→看報告→改→再跑」的迭代. 整體估計可壓縮到 1 週以內, 但仍需跨多輪來回確認架構決策(例如 backpressure 策略).
+- **關鍵規格確認(使用者提供)**:下游是同事負責的其他區塊, **每個 clock 都必須輸出 I/Q**(不理會下游 `tready`, 等於 `tvalid` 可以直接接常態高、fire-and-forget). 這個限制**完全消除輸出端的 backpressure/stall 設計複雜度**——不需要 output FIFO 吸收 tready 波動, pipeline 可以自由插入任意級數(加法樹 pipeline)而不用擔心暫停, 只要用對應級數的 shift register 把 `alpha`/`TLAST` 這些控制訊號延遲對齊即可.
+- **輸入端(`bit_in`)**:使用者確認上游理想上也是穩定 always-valid, 但**要保留現有的「idle_mode 補 0」機制**當 fallback(維持相位連續). 這跟輸出端的 backpressure 是兩件獨立的事, 沿用現有 non-blocking read(`read_nb`)邏輯即可, 不需要额外設計.
+- **HLS blocking write 的 stall 問題解釋**:Vitis HLS 的 `stream.write()` 語意上是 blocking——若轉成 RTL 後 `tready` 是 0, HLS 自動生成的邏輯要讓整條 pipeline 的每一個 register(shift_reg、precoder history、phase accumulator...)全部同步凍結, 手寫時若漏接或時序差一拍, 會在 backpressure 發生瞬間造成資料錯位, 這類 bug 難以在一般連續灌資料的 simulation 抓到. **但因為本專案輸出端確認是常態 valid, 這整個 stall 機制根本不需要存在**, 每個 register 可以是最單純的「每個 clock 無條件往前推進」, 跟現在 HLS `ap_ctrl_none` 自由跑的行為一致, 風險已被規格排除.
+
+## 58. 初步模組拆分構想(尚未定案, 下次可繼續細化)
+按功能拆成多檔案, 對應 `top.cpp` 原本就用註解分好的 Block:
+```
+soqpsk_top.v              -- 頂層: AXI4-Stream/Lite 介面 + 串接下面各模組
+soqpsk_diff_precoder.v    -- 差分編碼 + SOQPSK precoder(3-bit compare/select), 只在 byte 邊界跑
+soqpsk_fir.v              -- shift register + compare/select FIR + pipeline 加法樹
+soqpsk_phase_lut.v        -- phase accumulator + wrap + sin/cos LUT 內插
+g_coeffs_sps8.mem / sps16.mem  -- FIR 係數($readmemh 用, 從現有 .inc 轉格式, 沿用 gen_g_coeffs.ps1)
+sin_lut.mem / cos_lut.mem -- LUT 內容(沿用 gen_sincos_lut.ps1)
+```
+**模組間介面**(內部串接, 不是對外的完整 AXI4-Stream):只用「資料 bus + 單週期 valid/strobe 脈衝」, 不接 ready/backpressure——因為下游規格已確認 pipeline 是固定節奏往前跑, 不需要真的雙向握手, valid 只用來標記 pipeline 結果何時有效(給 TLAST 之類旗標延遲對齊用), 不做流量控制. 每個模組(尤其 `diff_precoder`)可以獨立寫 testbench 驗證, 不用整條 pipeline 一起跑才能除錯.
+
+**目前狀態**: 純討論階段, 使用者要求先不要開始寫, 下次接續.
